@@ -68,6 +68,27 @@ impl WritePacket {
     }
 }
 
+#[derive(Debug)]
+pub struct ACK {
+    block: u16,
+}
+
+impl ACK {
+    pub fn new(block: u16) -> ACK {
+        ACK { block }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        //  2 bytes     2 bytes
+        //  ---------------------
+        // | Opcode |   Block #  |
+        //  ---------------------
+        let opcode: [u8; 2] = (0x4 as u16).to_be_bytes();
+        let block: [u8; 2] = self.block.to_be_bytes();
+        [opcode, block].concat().into_iter().collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +115,13 @@ mod tests {
         ];
         let res = WritePacket::parse(&s);
         assert!(res.is_err());
+        return Ok(());
+    }
+
+    #[test]
+    fn test_encode_ack() -> Result<()> {
+        let ack = ACK::new(1);
+        assert_eq!(ack.encode(), vec![0x00, 0x04, 0x00, 0x01]);
         return Ok(());
     }
 }

@@ -1,6 +1,5 @@
 mod packet;
 
-use crate::packet::InitialPacket;
 use anyhow::{bail, Context, Result};
 use log::{debug, error};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -18,19 +17,22 @@ fn main() -> Result<()> {
     debug!("listening at {}:{}", server_addr, server_port);
 
     loop {
-        let (n, address) = sock.recv_from(&mut buf)?;
+        let (n, client_addr) = sock.recv_from(&mut buf)?;
         if n == 0 {
             break;
         }
 
         let raw = &buf[..n];
 
-        match InitialPacket::parse(raw) {
-            Ok(InitialPacket::WRQ(wrq)) => {
-                debug!("{:?}", wrq);
+        match packet::InitialPacket::parse(raw) {
+            Ok(packet::InitialPacket::WRQ(wrq)) => {
+                debug!("received: {:?}", wrq);
+                let ack = packet::ACK::new(0);
+                sock.send_to(&ack.encode(), client_addr)?;
+                debug!("send: {:?}", ack);
             }
             Err(err) => {
-                error!("Failed to parse InitialPacket: {:?}", err);
+                bail!("Failed to parse InitialPacket: {:?}", err);
             }
         }
     }
