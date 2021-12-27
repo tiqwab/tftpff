@@ -49,8 +49,8 @@ impl InitialPacket {
 
 #[derive(Debug)]
 pub struct WritePacket {
-    filename: String,
-    mode: Mode,
+    pub filename: String,
+    pub mode: Mode,
 }
 
 impl WritePacket {
@@ -86,6 +86,33 @@ impl ACK {
         let opcode: [u8; 2] = (0x4 as u16).to_be_bytes();
         let block: [u8; 2] = self.block.to_be_bytes();
         [opcode, block].concat().into_iter().collect()
+    }
+}
+
+pub struct Data {
+    block: u16,
+    data: Vec<u8>,
+}
+
+impl Data {
+    pub fn parse(s: &[u8]) -> Result<Data> {
+        //  2 bytes     2 bytes      n bytes
+        //  ----------------------------------
+        // | Opcode |   Block #  |   Data     |
+        //  ----------------------------------
+        let opcode = u16::from_be_bytes(s[..2].try_into()?);
+        if opcode != 0x03 {
+            bail!("Illegal opcode as Data: {}", opcode);
+        }
+
+        let block = u16::from_be_bytes(s[2..4].try_into()?);
+        let data = s[4..].to_owned();
+
+        Ok(Data { block, data })
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
     }
 }
 
