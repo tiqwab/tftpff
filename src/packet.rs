@@ -104,16 +104,32 @@ pub struct ACK {
 }
 
 impl ACK {
+    const OPCODE: u16 = 0x04;
+
     pub fn new(block: u16) -> ACK {
         ACK { block }
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn block(&self) -> u16 {
+        self.block
+    }
+
+    pub fn parse(s: &[u8]) -> Result<ACK> {
         //  2 bytes     2 bytes
         //  ---------------------
         // | Opcode |   Block #  |
         //  ---------------------
-        let opcode: [u8; 2] = (0x4 as u16).to_be_bytes();
+        let opcode = u16::from_be_bytes(s[..2].try_into()?);
+        if opcode != ACK::OPCODE {
+            bail!("Illegal opcode as Data: {}", opcode);
+        }
+
+        let block = u16::from_be_bytes(s[2..4].try_into()?);
+        Ok(ACK { block })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let opcode: [u8; 2] = ACK::OPCODE.to_be_bytes();
         let block: [u8; 2] = self.block.to_be_bytes();
         [opcode, block].concat().into_iter().collect()
     }
@@ -125,13 +141,30 @@ pub struct Data {
 }
 
 impl Data {
+    const OPCODE: u16 = 0x03;
+
+    pub fn new(block: u16, data: &[u8]) -> Data {
+        Data {
+            block,
+            data: data.to_owned(),
+        }
+    }
+
+    pub fn block(&self) -> u16 {
+        self.block
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
     pub fn parse(s: &[u8]) -> Result<Data> {
         //  2 bytes     2 bytes      n bytes
         //  ----------------------------------
         // | Opcode |   Block #  |   Data     |
         //  ----------------------------------
         let opcode = u16::from_be_bytes(s[..2].try_into()?);
-        if opcode != 0x03 {
+        if opcode != Data::OPCODE {
             bail!("Illegal opcode as Data: {}", opcode);
         }
 
@@ -141,8 +174,11 @@ impl Data {
         Ok(Data { block, data })
     }
 
-    pub fn data(&self) -> &[u8] {
-        &self.data
+    pub fn encode(&self) -> Vec<u8> {
+        let opcode = Data::OPCODE.to_be_bytes().to_vec();
+        let block = self.block.to_be_bytes().to_vec();
+        let data = self.data.clone();
+        [opcode, block, data].concat()
     }
 }
 
@@ -201,9 +237,36 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_ack() -> Result<()> {
+        let s = [0x00, 0x04, 0x00, 0x01];
+        let ack = ACK::parse(&s)?;
+        assert_eq!(ack.block(), 1);
+        return Ok(());
+    }
+
+    #[test]
     fn test_encode_ack() -> Result<()> {
         let ack = ACK::new(1);
         assert_eq!(ack.encode(), vec![0x00, 0x04, 0x00, 0x01]);
+        return Ok(());
+    }
+
+    #[test]
+    fn test_parse_data() -> Result<()> {
+        let s = [0x00, 0x03, 0x00, 0x01, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
+        let data = Data::parse(&s)?;
+        assert_eq!(data.block(), 1);
+        assert_eq!(data.data(), &s[4..]);
+        return Ok(());
+    }
+
+    #[test]
+    fn test_encode_data() -> Result<()> {
+        let data = Data::new(1, &b"hello"[..]);
+        assert_eq!(
+            data.encode(),
+            vec![0x00, 0x03, 0x00, 0x01, 0x68, 0x65, 0x6c, 0x6c, 0x6f]
+        );
         return Ok(());
     }
 }

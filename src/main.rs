@@ -2,9 +2,9 @@ mod packet;
 mod temp_dir;
 
 use anyhow::{bail, Context, Result};
-use log::{debug, error};
+use log::{debug, error, warn};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -74,10 +74,43 @@ fn main() -> Result<()> {
                 let mut dest_path = PathBuf::from(base_dir);
                 dest_path.push(&wrq.filename);
                 fs::rename(temp_file_path, dest_path)?;
-                debug!("finish WRQ for {:?}", wrq.filename)
+                debug!("finish WRQ for {:?}", wrq.filename);
             }
             Ok(packet::InitialPacket::RRQ(rrq)) => {
-                bail!("Handling of RRQ is not yet implemented");
+                debug!("received RRQ: {:?}", rrq);
+                let mut block = 1;
+
+                let mut src_path = PathBuf::from(base_dir);
+                src_path.push(&rrq.filename);
+                let mut file = fs::File::open(&src_path)?; // FIXME: error handling
+
+                loop {
+                    let mut file_buf = [0 as u8; 512];
+                    let file_n = file.read(&mut file_buf)?;
+                    let data_pkt = packet::Data::new(block, &file_buf[..file_n]);
+                    sock.send_to(&data_pkt.encode(), client_addr)?;
+
+                    let (ack_n, client_addr) = sock.recv_from(&mut buf)?;
+                    match packet::ACK::parse(&buf[..ack_n]) {
+                        Ok(pkt) => {
+                            if pkt.block() != block {
+                                warn!("received ACK with wrong block.")
+                                // TODO: resend
+                            }
+                        }
+                        Err(err) => {
+                            warn!("couldn't receive ACK: {:?}", err)
+                            // TODO: resend
+                        }
+                    }
+                    block += 1;
+                    debug!("sent data: size={}", file_n);
+                    if file_n < 512 {
+                        break;
+                    }
+                }
+
+                debug!("finish RRQ for {:?}", rrq.filename);
             }
             Err(err) => {
                 bail!("Failed to parse InitialPacket: {:?}", err);
