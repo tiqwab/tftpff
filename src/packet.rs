@@ -34,14 +34,15 @@ impl fmt::Display for Mode {
 #[derive(Debug)]
 pub enum InitialPacket {
     WRQ(WritePacket),
+    RRQ(ReadPacket),
 }
 
 impl InitialPacket {
     pub fn parse(s: &[u8]) -> Result<InitialPacket> {
         let opcode = u16::from_be_bytes(s[..2].try_into()?);
         match opcode {
-            1 => bail!("RRQ is not yet implemented"),
-            2 => Ok(InitialPacket::WRQ(WritePacket::parse(s)?)),
+            ReadPacket::OPCODE => Ok(InitialPacket::RRQ(ReadPacket::parse(s)?)),
+            WritePacket::OPCODE => Ok(InitialPacket::WRQ(WritePacket::parse(s)?)),
             _ => bail!("Unknown InitialPacket"),
         }
     }
@@ -54,9 +55,13 @@ pub struct WritePacket {
 }
 
 impl WritePacket {
-    // FIXME: InitialPacket::WRQ cannot be type?
+    const OPCODE: u16 = 0x02;
+
     fn parse(s: &[u8]) -> Result<WritePacket> {
-        // skip opcode
+        let opcode = u16::from_be_bytes(s[..2].try_into()?);
+        if opcode != WritePacket::OPCODE {
+            bail!("Illegal opcode as WRQ");
+        }
         let s = &s[2..];
         let bs: Vec<&[u8]> = s.split(|x| *x == 0).collect();
         if bs.len() != 3 {
@@ -65,6 +70,31 @@ impl WritePacket {
         let filename = String::from_utf8_lossy(bs[0]).into_owned();
         let mode = Mode::parse(bs[1]).ok_or(anyhow!("Failed to parse mode"))?;
         Ok(WritePacket { filename, mode })
+    }
+}
+
+#[derive(Debug)]
+pub struct ReadPacket {
+    pub filename: String,
+    pub mode: Mode,
+}
+
+impl ReadPacket {
+    const OPCODE: u16 = 0x01;
+
+    fn parse(s: &[u8]) -> Result<ReadPacket> {
+        let opcode = u16::from_be_bytes(s[..2].try_into()?);
+        if opcode != ReadPacket::OPCODE {
+            bail!("Illegal opcode as RRQ");
+        }
+        let s = &s[2..];
+        let bs: Vec<&[u8]> = s.split(|x| *x == 0).collect();
+        if bs.len() != 3 {
+            bail!("Illegal packet as RRQ");
+        }
+        let filename = String::from_utf8_lossy(bs[0]).into_owned();
+        let mode = Mode::parse(bs[1]).ok_or(anyhow!("Failed to parse mode"))?;
+        Ok(ReadPacket { filename, mode })
     }
 }
 
@@ -141,6 +171,31 @@ mod tests {
             0x00,
         ];
         let res = WritePacket::parse(&s);
+        assert!(res.is_err());
+        return Ok(());
+    }
+
+    #[test]
+    fn test_parse_rrq_ok() -> Result<()> {
+        // opcode=1, filename=Cargo.toml, mode=netascii
+        let s = [
+            0x00, 0x01, 0x43, 0x61, 0x72, 0x67, 0x6f, 0x2e, 0x74, 0x6f, 0x6d, 0x6c, 0x00, 0x6e,
+            0x65, 0x74, 0x61, 0x73, 0x63, 0x69, 0x69, 0x00,
+        ];
+        let res = ReadPacket::parse(&s)?;
+        assert_eq!(res.filename, "Cargo.toml");
+        assert_eq!(res.mode, Mode::NETASCII);
+        return Ok(());
+    }
+
+    #[test]
+    fn test_parse_rrq_with_illegal_mode() -> Result<()> {
+        // opcode=1, filename=Cargo.toml, mode=n (illegal)
+        let s = [
+            0x00, 0x01, 0x43, 0x61, 0x72, 0x67, 0x6f, 0x2e, 0x74, 0x6f, 0x6d, 0x6c, 0x00, 0x6e,
+            0x00,
+        ];
+        let res = ReadPacket::parse(&s);
         assert!(res.is_err());
         return Ok(());
     }

@@ -76,6 +76,9 @@ fn main() -> Result<()> {
                 fs::rename(temp_file_path, dest_path)?;
                 debug!("finish WRQ for {:?}", wrq.filename)
             }
+            Ok(packet::InitialPacket::RRQ(rrq)) => {
+                bail!("Handling of RRQ is not yet implemented");
+            }
             Err(err) => {
                 bail!("Failed to parse InitialPacket: {:?}", err);
             }
