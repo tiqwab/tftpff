@@ -19,6 +19,14 @@ impl Mode {
             _ => None,
         }
     }
+
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Mode::NETASCII => "netascii".as_bytes().to_vec(),
+            Mode::OCTET => "octet".as_bytes().to_vec(),
+            Mode::MAIL => "mail".as_bytes().to_vec(),
+        }
+    }
 }
 
 impl fmt::Display for Mode {
@@ -57,7 +65,15 @@ pub struct WritePacket {
 impl WritePacket {
     const OPCODE: u16 = 0x02;
 
+    pub(crate) fn new(filename: String, mode: Mode) -> WritePacket {
+        WritePacket { filename, mode }
+    }
+
     fn parse(s: &[u8]) -> Result<WritePacket> {
+        //  2 bytes     string    1 byte     string   1 byte
+        //  ------------------------------------------------
+        // | Opcode |  Filename  |   0  |    Mode    |   0  |
+        //  ------------------------------------------------
         let opcode = u16::from_be_bytes(s[..2].try_into()?);
         if opcode != WritePacket::OPCODE {
             bail!("Illegal opcode as WRQ");
@@ -71,6 +87,13 @@ impl WritePacket {
         let mode = Mode::parse(bs[1]).ok_or(anyhow!("Failed to parse mode"))?;
         Ok(WritePacket { filename, mode })
     }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let opcode: Vec<u8> = WritePacket::OPCODE.to_be_bytes().to_vec();
+        let filename: Vec<u8> = self.filename.as_bytes().to_vec();
+        let mode: Vec<u8> = self.mode.encode();
+        [opcode, filename, vec![0], mode, vec![0]].concat()
+    }
 }
 
 #[derive(Debug)]
@@ -82,7 +105,15 @@ pub struct ReadPacket {
 impl ReadPacket {
     const OPCODE: u16 = 0x01;
 
+    pub(crate) fn new(filename: String, mode: Mode) -> ReadPacket {
+        ReadPacket { filename, mode }
+    }
+
     fn parse(s: &[u8]) -> Result<ReadPacket> {
+        //  2 bytes     string    1 byte     string   1 byte
+        //  ------------------------------------------------
+        // | Opcode |  Filename  |   0  |    Mode    |   0  |
+        //  ------------------------------------------------
         let opcode = u16::from_be_bytes(s[..2].try_into()?);
         if opcode != ReadPacket::OPCODE {
             bail!("Illegal opcode as RRQ");
@@ -95,6 +126,13 @@ impl ReadPacket {
         let filename = String::from_utf8_lossy(bs[0]).into_owned();
         let mode = Mode::parse(bs[1]).ok_or(anyhow!("Failed to parse mode"))?;
         Ok(ReadPacket { filename, mode })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let opcode: Vec<u8> = ReadPacket::OPCODE.to_be_bytes().to_vec();
+        let filename: Vec<u8> = self.filename.as_bytes().to_vec();
+        let mode: Vec<u8> = self.mode.encode();
+        [opcode, filename, vec![0], mode, vec![0]].concat()
     }
 }
 
