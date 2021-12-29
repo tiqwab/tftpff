@@ -141,7 +141,8 @@ pub fn create_rrq_handler(
         let mut buf = [0; 1024];
 
         let src_path = base_dir.join(&rrq.filename);
-        let mut file = fs::File::open(&src_path)?; // FIXME: error handling
+        let mut file =
+            fs::File::open(&src_path).with_context(|| format!("Failed to open {:?}", src_path))?;
 
         loop {
             let mut file_buf = [0 as u8; 512];
@@ -149,16 +150,25 @@ pub fn create_rrq_handler(
             let data_pkt = packet::Data::new(block, &file_buf[..file_n]);
             sock.send_to(&data_pkt.encode(), client_addr)?;
 
-            let (ack_n, client_addr) = sock.recv_from(&mut buf)?;
+            let (ack_n, ack_addr) = sock.recv_from(&mut buf)?;
+            if ack_addr != client_addr {
+                warn!(
+                    "receive packet from unknown client: {}. ignore it.",
+                    ack_addr
+                );
+                // TODO: ignore
+                continue;
+            }
+
             match packet::ACK::parse(&buf[..ack_n]) {
                 Ok(pkt) => {
                     if pkt.block() != block {
-                        warn!("received ACK with wrong block.")
+                        warn!("received ACK with wrong block.");
                         // TODO: resend
                     }
                 }
                 Err(err) => {
-                    warn!("couldn't receive ACK: {:?}", err)
+                    warn!("couldn't receive ACK: {:?}", err);
                     // TODO: resend
                 }
             }
@@ -193,9 +203,16 @@ pub fn create_wrq_handler(
         debug!("created {:?}", temp_file_path);
 
         loop {
-            let (n, client_addr) = sock.recv_from(&mut buf)?;
-            let raw = &buf[..n];
-            match packet::Data::parse(raw) {
+            let (n, data_addr) = sock.recv_from(&mut buf)?;
+            if data_addr != client_addr {
+                warn!(
+                    "receive packet from unknown client: {}. ignore it.",
+                    data_addr
+                );
+                continue;
+            }
+
+            match packet::Data::parse(&buf[..n]) {
                 Ok(pkt) => {
                     debug!("received data: size={}", pkt.data().len());
                     if pkt.data().len() == 0 {
