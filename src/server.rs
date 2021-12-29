@@ -1,17 +1,19 @@
 use crate::packet::{ReadPacket, WritePacket};
 use crate::{packet, temp_dir};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use log::{debug, error, warn};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::{fs, thread};
+use std::time::Duration;
+use std::{fs, thread, time};
 
 pub struct TftpServer {
     server_addr: Ipv4Addr,
     server_port: u16,
+    retry_interval: Duration,
     rrq_handler: Arc<Box<dyn Fn(UdpSocket, SocketAddr, ReadPacket) -> Result<()> + Send + Sync>>,
     wrq_handler: Arc<Box<dyn Fn(UdpSocket, SocketAddr, WritePacket) -> Result<()> + Send + Sync>>,
     server_sock: Option<UdpSocket>,
@@ -30,6 +32,7 @@ impl TftpServer {
         Ok(TftpServer {
             server_addr,
             server_port,
+            retry_interval: Duration::from_secs(5),
             rrq_handler: Arc::new(Box::new(rrq_handler)),
             wrq_handler: Arc::new(Box::new(wrq_handler)),
             server_sock: None,
@@ -45,6 +48,7 @@ impl TftpServer {
         TftpServer {
             server_addr,
             server_port,
+            retry_interval: Duration::from_secs(5),
             rrq_handler: Arc::new(rrq_handler),
             wrq_handler: Arc::new(wrq_handler),
             server_sock: None,
@@ -73,12 +77,14 @@ impl TftpServer {
             let mut client_buf = [0; 1024];
             let (client_n, client_addr) = server_sock
                 .recv_from(&mut client_buf)
-                .context("Failed to receive packet")?;
+                .context("Failed to receive request packet")?;
 
             match packet::InitialPacket::parse(&client_buf[..client_n]) {
                 Ok(packet::InitialPacket::WRQ(wrq)) => {
                     match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
                         Ok(child_sock) => {
+                            child_sock.set_read_timeout(Some(self.retry_interval))?;
+                            child_sock.set_write_timeout(Some(self.retry_interval))?;
                             self.spawn_wrq(child_sock, client_addr, wrq);
                         }
                         Err(err) => {
@@ -89,6 +95,8 @@ impl TftpServer {
                 Ok(packet::InitialPacket::RRQ(rrq)) => {
                     match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
                         Ok(child_sock) => {
+                            child_sock.set_read_timeout(Some(self.retry_interval))?;
+                            child_sock.set_write_timeout(Some(self.retry_interval))?;
                             self.spawn_rrq(child_sock, client_addr, rrq);
                         }
                         Err(err) => {
@@ -184,59 +192,141 @@ pub fn create_rrq_handler(
     }
 }
 
+enum WrqHandlingState {
+    RequestAccepted { trial_count: u16 },
+    DataAccepted { block: u16, trial_count: u16 },
+}
+
+impl WrqHandlingState {
+    const MAX_TRIAL_COUNT: u16 = 5;
+
+    fn new() -> WrqHandlingState {
+        WrqHandlingState::RequestAccepted { trial_count: 0 }
+    }
+
+    fn block(&self) -> u16 {
+        match self {
+            WrqHandlingState::RequestAccepted { .. } => 0,
+            WrqHandlingState::DataAccepted { block, .. } => block.clone(),
+        }
+    }
+
+    fn trial_count(&self) -> u16 {
+        (match self {
+            WrqHandlingState::RequestAccepted { trial_count } => trial_count,
+            WrqHandlingState::DataAccepted { trial_count, .. } => trial_count,
+        })
+        .clone()
+    }
+
+    fn increment_trial_count(&mut self) -> Option<u16> {
+        let cur = match self {
+            WrqHandlingState::RequestAccepted { trial_count } => trial_count,
+            WrqHandlingState::DataAccepted { trial_count, .. } => trial_count,
+        };
+        if *cur >= Self::MAX_TRIAL_COUNT {
+            None
+        } else {
+            *cur += 1;
+            Some(cur.clone())
+        }
+    }
+
+    fn prepare_packet(&mut self) -> Option<packet::ACK> {
+        self.increment_trial_count()
+            .map(|_| packet::ACK::new(self.block()))
+    }
+
+    fn next(self) -> Self {
+        match self {
+            WrqHandlingState::RequestAccepted { .. } => WrqHandlingState::DataAccepted {
+                block: 1,
+                trial_count: 0,
+            },
+            WrqHandlingState::DataAccepted { block, .. } => WrqHandlingState::DataAccepted {
+                block: block + 1,
+                trial_count: 0,
+            },
+        }
+    }
+}
+
 pub fn create_wrq_handler(
     base_dir: PathBuf,
     temp_dir: PathBuf,
 ) -> impl Fn(UdpSocket, SocketAddr, WritePacket) -> Result<()> {
     move |sock, client_addr, wrq| {
-        debug!("received WRQ: {:?}", wrq);
-        let mut block = 0;
+        debug!("[{}] received WRQ: {:?}", client_addr, wrq);
         let mut buf = [0; 1024];
+        let mut state = WrqHandlingState::new();
 
-        let ack = packet::ACK::new(block);
+        let ack = state.prepare_packet().unwrap();
         sock.send_to(&ack.encode(), client_addr)?;
-        block += 1;
-        debug!("sent ack: {:?}", ack);
+        debug!("[{}] sent ack: {:?}", client_addr, ack);
 
         let temp_file_path = temp_dir.join(&wrq.filename);
         let mut temp_file = fs::File::create(&temp_file_path)?;
-        debug!("created {:?}", temp_file_path);
+        debug!("[{}] created {:?}", client_addr, temp_file_path);
 
         loop {
-            let (n, data_addr) = sock.recv_from(&mut buf)?;
+            let (data_n, data_addr) = match sock.recv_from(&mut buf) {
+                Ok(res) => res,
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    // timeout
+                    match state.prepare_packet() {
+                        Some(pkt) => {
+                            // retransmit
+                            sock.send_to(&pkt.encode(), client_addr)?;
+                            debug!(
+                                "[{}] sent ack again (trial_count={}): {:?}",
+                                client_addr,
+                                state.trial_count(),
+                                pkt
+                            );
+                            continue;
+                        }
+                        None => {
+                            // exceed maximum retry count
+                            bail!("Failed to receive data from {}: timeout", client_addr);
+                        }
+                    }
+                }
+                Err(err) => {
+                    bail!("Failed to receive data from {}: {:?}", client_addr, err);
+                }
+            };
+
             if data_addr != client_addr {
                 warn!(
-                    "receive packet from unknown client: {}. ignore it.",
-                    data_addr
+                    "[{}] receive packet from unknown client: {}. ignore it.",
+                    client_addr, data_addr
                 );
                 continue;
             }
 
-            match packet::Data::parse(&buf[..n]) {
+            match packet::Data::parse(&buf[..data_n]) {
                 Ok(pkt) => {
-                    debug!("received data: size={}", pkt.data().len());
-                    if pkt.data().len() == 0 {
-                        break;
-                    }
+                    debug!("[{}] received data: size={}", client_addr, pkt.data().len());
                     temp_file.write(pkt.data())?;
-                    let ack = packet::ACK::new(block);
+
+                    state = state.next();
+                    let ack = state.prepare_packet().unwrap();
                     sock.send_to(&ack.encode(), client_addr)?;
-                    block += 1;
-                    debug!("sent ack: {:?}", ack);
+                    debug!("[{}] sent ack: {:?}", client_addr, ack);
 
                     if pkt.data().len() < 512 {
                         break;
                     }
                 }
                 Err(err) => {
-                    todo!()
+                    warn!("[{}] receive unknown packet. ignore it.", client_addr,);
                 }
             }
         }
 
         let dest_path = base_dir.join(&wrq.filename);
         fs::rename(temp_file_path, dest_path)?;
-        debug!("finish WRQ for {:?}", wrq.filename);
+        debug!("[{}] finish WRQ for {:?}", client_addr, wrq.filename);
         return Ok(());
     }
 }
