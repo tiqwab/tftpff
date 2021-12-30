@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use log::error;
+use rand::prelude::*;
 use std::env::temp_dir;
 use std::path::{Path, PathBuf};
 
@@ -12,9 +13,9 @@ impl TempDir {
         let epoch_seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        let dirname = format!("tftpff-{}", epoch_seconds);
-        let mut p = temp_dir();
-        p.push(dirname);
+        let rand_str = String::from_iter(('a'..='z').choose_multiple(&mut thread_rng(), 7));
+        let dirname = format!("tftpff-{}-{}", epoch_seconds, rand_str);
+        let p = temp_dir().join(dirname);
 
         std::fs::create_dir(&p)
             .with_context(|| format!("Failed to create temporary directory at {:?}", p))?;

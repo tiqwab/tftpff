@@ -16,9 +16,13 @@ fn main() -> Result<()> {
     let base_dir = Path::new("/tmp/tftpff");
     let temp_dir = temp_dir::create_temp_dir()?;
 
-    let mut server =
-        server::TftpServer::create(server_addr, server_port, base_dir, temp_dir.path())
-            .context("Failed to create TftpServer")?;
+    let mut server = server::TftpServer::create(
+        server_addr,
+        server_port,
+        base_dir,
+        temp_dir.path().to_owned(),
+    )
+    .context("Failed to create TftpServer")?;
     server.bind().context("Failed to bind")?;
     server.run().context("Failed in TftpServer running")?;
 
