@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use log::{debug, error, warn};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -140,54 +141,244 @@ impl TftpServer {
     }
 }
 
+enum RrqHandlingState {
+    // for file size is multiplication of 512
+    RequestAccepted1 {
+        trial_count: u16,
+        data: Vec<u8>,
+    },
+    DataAccepted1 {
+        block: u16,
+        trial_count: u16,
+        data: Vec<u8>,
+    },
+    EmptyDataAccepted1 {
+        block: u16,
+        trial_count: u16,
+    },
+    // for file size is not multiplication of 512
+    RequestAccepted2 {
+        trial_count: u16,
+        data: Vec<u8>,
+    },
+    DataAccepted2 {
+        block: u16,
+        trial_count: u16,
+        data: Vec<u8>,
+    },
+    Completed,
+}
+
+impl RrqHandlingState {
+    const MAX_TRIAL_COUNT: u16 = 5;
+
+    fn new(data: Vec<u8>, file_size: u64) -> RrqHandlingState {
+        if file_size % 512 == 0 {
+            RrqHandlingState::RequestAccepted1 {
+                trial_count: 0,
+                data,
+            }
+        } else {
+            RrqHandlingState::RequestAccepted2 {
+                trial_count: 0,
+                data,
+            }
+        }
+    }
+
+    fn block(&self) -> u16 {
+        // FIXME: panic
+        match self {
+            RrqHandlingState::RequestAccepted1 { .. } => 1,
+            RrqHandlingState::DataAccepted1 { block, .. } => block.clone(),
+            RrqHandlingState::EmptyDataAccepted1 { block, .. } => block.clone(),
+            RrqHandlingState::RequestAccepted2 { .. } => 1,
+            RrqHandlingState::DataAccepted2 { block, .. } => block.clone(),
+            RrqHandlingState::Completed => panic!("shouldn't call block() for Completed"),
+        }
+    }
+
+    fn data(&self) -> &[u8] {
+        // FIXME: panic
+        match self {
+            RrqHandlingState::RequestAccepted1 { data, .. } => data,
+            RrqHandlingState::DataAccepted1 { data, .. } => data,
+            RrqHandlingState::EmptyDataAccepted1 { .. } => Default::default(),
+            RrqHandlingState::RequestAccepted2 { data, .. } => data,
+            RrqHandlingState::DataAccepted2 { data, .. } => data,
+            RrqHandlingState::Completed => panic!("shouldn't call data() for Completed"),
+        }
+    }
+
+    fn trial_count(&self) -> u16 {
+        // FIXME: panic
+        (match self {
+            RrqHandlingState::RequestAccepted1 { trial_count, .. } => trial_count,
+            RrqHandlingState::DataAccepted1 { trial_count, .. } => trial_count,
+            RrqHandlingState::EmptyDataAccepted1 { trial_count, .. } => trial_count,
+            RrqHandlingState::RequestAccepted2 { trial_count, .. } => trial_count,
+            RrqHandlingState::DataAccepted2 { trial_count, .. } => trial_count,
+            RrqHandlingState::Completed => panic!("shouldn't call trial_count() for Completed"),
+        })
+        .clone()
+    }
+
+    fn increment_trial_count(&mut self) -> Option<u16> {
+        let cur = match self {
+            RrqHandlingState::RequestAccepted1 { trial_count, .. } => trial_count,
+            RrqHandlingState::DataAccepted1 { trial_count, .. } => trial_count,
+            RrqHandlingState::EmptyDataAccepted1 { trial_count, .. } => trial_count,
+            RrqHandlingState::RequestAccepted2 { trial_count, .. } => trial_count,
+            RrqHandlingState::DataAccepted2 { trial_count, .. } => trial_count,
+            RrqHandlingState::Completed => return None,
+        };
+        if *cur >= Self::MAX_TRIAL_COUNT {
+            None
+        } else {
+            *cur += 1;
+            Some(cur.clone())
+        }
+    }
+
+    fn prepare_packet(&mut self) -> Option<packet::Data> {
+        self.increment_trial_count()
+            .map(|_| packet::Data::new(self.block(), self.data()))
+    }
+
+    fn next(self, data: Vec<u8>) -> Self {
+        assert!(data.len() <= 512);
+        if data.len() > 0 {
+            // FIXME: cannot be Completed here
+            match self {
+                RrqHandlingState::RequestAccepted1 { .. } => RrqHandlingState::DataAccepted1 {
+                    block: 2,
+                    trial_count: 0,
+                    data,
+                },
+                RrqHandlingState::DataAccepted1 { block, .. } => RrqHandlingState::DataAccepted1 {
+                    block: block + 1,
+                    trial_count: 0,
+                    data,
+                },
+                RrqHandlingState::RequestAccepted2 { .. } => RrqHandlingState::DataAccepted2 {
+                    block: 2,
+                    trial_count: 0,
+                    data,
+                },
+                RrqHandlingState::DataAccepted2 { block, .. } => RrqHandlingState::DataAccepted2 {
+                    block: block + 1,
+                    trial_count: 0,
+                    data,
+                },
+                RrqHandlingState::EmptyDataAccepted1 { .. } => self,
+                RrqHandlingState::Completed => RrqHandlingState::Completed,
+            }
+        } else {
+            match self {
+                RrqHandlingState::RequestAccepted1 { .. } => RrqHandlingState::EmptyDataAccepted1 {
+                    block: 2,
+                    trial_count: 0,
+                },
+                RrqHandlingState::DataAccepted1 { block, .. } => {
+                    RrqHandlingState::EmptyDataAccepted1 {
+                        block: block + 1,
+                        trial_count: 0,
+                    }
+                }
+                RrqHandlingState::EmptyDataAccepted1 { .. } => RrqHandlingState::Completed,
+                RrqHandlingState::RequestAccepted2 { .. } => RrqHandlingState::Completed,
+                RrqHandlingState::DataAccepted2 { .. } => RrqHandlingState::Completed,
+                RrqHandlingState::Completed => RrqHandlingState::Completed,
+            }
+        }
+    }
+}
+
 pub fn create_rrq_handler(
     base_dir: PathBuf,
 ) -> impl Fn(UdpSocket, SocketAddr, ReadPacket) -> Result<()> {
     move |sock, client_addr, rrq| {
-        debug!("received RRQ: {:?}", rrq);
-        let mut block = 1;
-        let mut buf = [0; 1024];
+        debug!("[{}] received RRQ: {:?}", client_addr, rrq);
 
         let src_path = base_dir.join(&rrq.filename);
         let mut file =
             fs::File::open(&src_path).with_context(|| format!("Failed to open {:?}", src_path))?;
+        let mut file_buf = [0 as u8; 512];
+        let mut file_n = file.read(&mut file_buf)?;
+
+        let mut buf = [0; 1024];
+        let mut state =
+            RrqHandlingState::new((&file_buf[..file_n]).to_owned(), file.metadata()?.size());
+
+        let data = state.prepare_packet().unwrap();
+        sock.send_to(&data.encode(), client_addr)?;
+        debug!("[{}] sent data: {}", client_addr, data);
 
         loop {
-            let mut file_buf = [0 as u8; 512];
-            let file_n = file.read(&mut file_buf)?;
-            let data_pkt = packet::Data::new(block, &file_buf[..file_n]);
-            sock.send_to(&data_pkt.encode(), client_addr)?;
+            let (ack_n, ack_addr) = match sock.recv_from(&mut buf) {
+                Ok(res) => res,
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    // timeout
+                    match state.prepare_packet() {
+                        Some(pkt) => {
+                            // retransmit
+                            sock.send_to(&pkt.encode(), client_addr)?;
+                            debug!(
+                                "[{}] sent data again (trial_count={}): {}",
+                                client_addr,
+                                state.trial_count(),
+                                pkt
+                            );
+                            continue;
+                        }
+                        None => {
+                            // exceed maximum retry count
+                            bail!("Failed to receive ack from {}: timeout", client_addr);
+                        }
+                    }
+                }
+                Err(err) => {
+                    bail!("Failed to receive ack from {}: {:?}", client_addr, err);
+                }
+            };
 
-            let (ack_n, ack_addr) = sock.recv_from(&mut buf)?;
             if ack_addr != client_addr {
                 warn!(
-                    "receive packet from unknown client: {}. ignore it.",
-                    ack_addr
+                    "[{}] received packet from unknown client: {}. ignore it.",
+                    client_addr, ack_addr
                 );
-                // TODO: ignore
                 continue;
             }
 
             match packet::ACK::parse(&buf[..ack_n]) {
-                Ok(pkt) => {
-                    if pkt.block() != block {
-                        warn!("received ACK with wrong block.");
-                        // TODO: resend
+                Ok(pkt) if pkt.block() == state.block() => {
+                    debug!("[{}] received ack: {:?}", client_addr, pkt);
+                    file_n = file.read(&mut file_buf)?;
+                    state = state.next(file_buf[..file_n].to_owned());
+                    match state.prepare_packet() {
+                        Some(data) => {
+                            sock.send_to(&data.encode(), client_addr)?;
+                            debug!("[{}] sent data: {}", client_addr, data);
+                        }
+                        None => {
+                            // sent all data
+                            break;
+                        }
                     }
                 }
-                Err(err) => {
-                    warn!("couldn't receive ACK: {:?}", err);
-                    // TODO: resend
+                Ok(_pkt) => {
+                    warn!("[{}] received ack with wrong block.", client_addr);
                 }
-            }
-            block += 1;
-            debug!("sent data: size={}", file_n);
-            if file_n < 512 {
-                break;
+                Err(err) => {
+                    warn!(
+                        "[{}] received unknown packet. ignore it: {:?}",
+                        client_addr, err
+                    );
+                }
             }
         }
 
-        debug!("finish RRQ for {:?}", rrq.filename);
+        debug!("[{}] finish RRQ for {:?}", client_addr, rrq.filename);
         return Ok(());
     }
 }
@@ -298,7 +489,7 @@ pub fn create_wrq_handler(
 
             if data_addr != client_addr {
                 warn!(
-                    "[{}] receive packet from unknown client: {}. ignore it.",
+                    "[{}] received packet from unknown client: {}. ignore it.",
                     client_addr, data_addr
                 );
                 continue;
@@ -319,7 +510,10 @@ pub fn create_wrq_handler(
                     }
                 }
                 Err(err) => {
-                    warn!("[{}] receive unknown packet. ignore it.", client_addr,);
+                    warn!(
+                        "[{}] received unknown packet. ignore it: {:?}",
+                        client_addr, err
+                    );
                 }
             }
         }

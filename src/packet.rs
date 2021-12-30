@@ -220,6 +220,16 @@ impl Data {
     }
 }
 
+impl fmt::Display for Data {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!(
+            "Data {{ block: {}, data: {} bytes }}",
+            self.block,
+            self.data.len()
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
