@@ -192,7 +192,7 @@ impl Data {
         &self.data
     }
 
-    pub fn parse(s: &[u8]) -> Result<Data> {
+    pub fn parse(s: &[u8], mode: &Mode) -> Result<Data> {
         //  2 bytes     2 bytes      n bytes
         //  ----------------------------------
         // | Opcode |   Block #  |   Data     |
@@ -203,16 +203,64 @@ impl Data {
         }
 
         let block = u16::from_be_bytes(s[2..4].try_into()?);
-        let data = s[4..].to_owned();
+        let data = if mode == &Mode::NETASCII {
+            Self::parse_netascii(&s[4..])
+        } else {
+            s[4..].to_owned()
+        };
 
         Ok(Data { block, data })
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    fn parse_netascii(data: &[u8]) -> Vec<u8> {
+        let mut res = vec![];
+        let mut i = 0;
+        while i < data.len() {
+            let x = data[i];
+            if x == b'\r' {
+                i += 1;
+                let x = data[i];
+                if x == b'\0' {
+                    res.push(b'\r');
+                } else if x == b'\n' {
+                    res.push(b'\n');
+                } else {
+                    panic!(
+                        "Failed to parse data: unexpected byte after '\r', 0x{:x}",
+                        x
+                    );
+                }
+            } else {
+                res.push(x);
+            }
+            i += 1;
+        }
+        res
+    }
+
+    pub fn encode(&self, mode: &Mode) -> Vec<u8> {
         let opcode = Data::OPCODE.to_be_bytes().to_vec();
         let block = self.block.to_be_bytes().to_vec();
-        let data = self.data.clone();
+        let data = if mode == &Mode::NETASCII {
+            Self::encode_netascii(&self.data)
+        } else {
+            self.data.clone()
+        };
         [opcode, block, data].concat()
+    }
+
+    fn encode_netascii(data: &[u8]) -> Vec<u8> {
+        let mut res = vec![];
+        for x in data.iter() {
+            if *x == b'\r' {
+                res.append(&mut vec![b'\r', b'\0']);
+            } else if *x == b'\n' {
+                res.append(&mut vec![b'\r', b'\n']);
+            } else {
+                res.push(*x);
+            }
+        }
+        res
     }
 }
 
@@ -298,18 +346,49 @@ mod tests {
     #[test]
     fn test_parse_data() -> Result<()> {
         let s = [0x00, 0x03, 0x00, 0x01, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
-        let data = Data::parse(&s)?;
+        let mode = Mode::OCTET;
+        let data = Data::parse(&s, &mode)?;
         assert_eq!(data.block(), 1);
         assert_eq!(data.data(), &s[4..]);
         return Ok(());
     }
 
     #[test]
+    fn test_parse_data_netascii() -> Result<()> {
+        let s = [
+            vec![0x00, 0x03, 0x00, 0x01],
+            vec![b'a', b'\r', b'\0', b'a', b'\r', b'\n', b'a'],
+        ]
+        .concat();
+        let mode = Mode::NETASCII;
+        let data = Data::parse(&s, &mode)?;
+        assert_eq!(data.block(), 1);
+        assert_eq!(data.data(), &vec![b'a', b'\r', b'a', b'\n', b'a']);
+        return Ok(());
+    }
+
+    #[test]
     fn test_encode_data() -> Result<()> {
         let data = Data::new(1, &b"hello"[..]);
+        let mode = Mode::OCTET;
         assert_eq!(
-            data.encode(),
+            data.encode(&mode),
             vec![0x00, 0x03, 0x00, 0x01, 0x68, 0x65, 0x6c, 0x6c, 0x6f]
+        );
+        return Ok(());
+    }
+
+    #[test]
+    fn test_encode_data_netascii() -> Result<()> {
+        let data = Data::new(1, &vec![b'a', b'\r', b'a', b'\n', b'a']);
+        let mode = Mode::NETASCII;
+        assert_eq!(
+            data.encode(&mode),
+            [
+                vec![0x00, 0x03, 0x00, 0x01],
+                vec![b'a', b'\r', b'\0', b'a', b'\r', b'\n', b'a']
+            ]
+            .concat(),
         );
         return Ok(());
     }

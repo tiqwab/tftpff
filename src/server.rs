@@ -312,7 +312,7 @@ pub fn create_rrq_handler(
             RrqHandlingState::new((&file_buf[..file_n]).to_owned(), file.metadata()?.size());
 
         let data = state.prepare_packet().unwrap();
-        sock.send_to(&data.encode(), client_addr)?;
+        sock.send_to(&data.encode(&rrq.mode), client_addr)?;
         debug!("[{}] sent data: {}", client_addr, data);
 
         loop {
@@ -323,7 +323,7 @@ pub fn create_rrq_handler(
                     match state.prepare_packet() {
                         Some(pkt) => {
                             // retransmit
-                            sock.send_to(&pkt.encode(), client_addr)?;
+                            sock.send_to(&pkt.encode(&rrq.mode), client_addr)?;
                             debug!(
                                 "[{}] sent data again (trial_count={}): {}",
                                 client_addr,
@@ -358,7 +358,7 @@ pub fn create_rrq_handler(
                     state = state.next(file_buf[..file_n].to_owned());
                     match state.prepare_packet() {
                         Some(data) => {
-                            sock.send_to(&data.encode(), client_addr)?;
+                            sock.send_to(&data.encode(&rrq.mode), client_addr)?;
                             debug!("[{}] sent data: {}", client_addr, data);
                         }
                         None => {
@@ -496,7 +496,7 @@ pub fn create_wrq_handler(
                 continue;
             }
 
-            match packet::Data::parse(&buf[..data_n]) {
+            match packet::Data::parse(&buf[..data_n], &wrq.mode) {
                 Ok(pkt) => {
                     debug!("[{}] received data: size={}", client_addr, pkt.data().len());
                     temp_file.write(pkt.data())?;
@@ -620,15 +620,16 @@ mod tests {
         //
         let mut buf_client = [0; 1024];
         let mut actual_content: Vec<u8> = vec![];
+        let mode = Mode::OCTET;
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let data = packet::Data::parse(&buf_client[..n_client])?;
+        let data = packet::Data::parse(&buf_client[..n_client], &mode)?;
         assert_eq!(data.data().len(), 512);
         actual_content.append(&mut data.data().to_owned());
         sock_client.send_to(&packet::ACK::new(data.block()).encode(), addr_handler)?;
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let data = packet::Data::parse(&buf_client[..n_client])?;
+        let data = packet::Data::parse(&buf_client[..n_client], &mode)?;
         assert_eq!(data.data().len(), 1);
         actual_content.append(&mut data.data().to_owned());
         sock_client.send_to(&packet::ACK::new(data.block()).encode(), addr_handler)?;
@@ -667,19 +668,20 @@ mod tests {
         //
         let mut buf_client = [0; 1024];
         let content = [b'a'; 513];
+        let mode = Mode::OCTET;
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
         let ack = packet::ACK::parse(&buf_client[..n_client])?;
         assert_eq!(ack.block(), 0);
 
         let data = packet::Data::new(1, &content[..512]);
-        sock_client.send_to(&data.encode(), addr_handler)?;
+        sock_client.send_to(&data.encode(&mode), addr_handler)?;
         let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
         let ack = packet::ACK::parse(&buf_client[..n_client])?;
         assert_eq!(ack.block(), 1);
 
         let data = packet::Data::new(2, &content[512..]);
-        sock_client.send_to(&data.encode(), addr_handler)?;
+        sock_client.send_to(&data.encode(&mode), addr_handler)?;
         let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
         let ack = packet::ACK::parse(&buf_client[..n_client])?;
         assert_eq!(ack.block(), 2);
