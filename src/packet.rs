@@ -6,7 +6,6 @@ use std::fmt::Formatter;
 pub enum Mode {
     NETASCII,
     OCTET,
-    MAIL,
 }
 
 impl Mode {
@@ -15,7 +14,6 @@ impl Mode {
         match s.as_str() {
             "netascii" => Some(Mode::NETASCII),
             "octet" => Some(Mode::OCTET),
-            "mail" => Some(Mode::MAIL),
             _ => None,
         }
     }
@@ -24,7 +22,6 @@ impl Mode {
         match self {
             Mode::NETASCII => "netascii".as_bytes().to_vec(),
             Mode::OCTET => "octet".as_bytes().to_vec(),
-            Mode::MAIL => "mail".as_bytes().to_vec(),
         }
     }
 }
@@ -34,7 +31,6 @@ impl fmt::Display for Mode {
         match self {
             Mode::NETASCII => f.write_str("netascii"),
             Mode::OCTET => f.write_str("octet"),
-            Mode::MAIL => f.write_str("mail"),
         }
     }
 }
