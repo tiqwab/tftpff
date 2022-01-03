@@ -334,20 +334,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_wrq_ok() -> Result<()> {
+    fn test_parse_wrq_ok() {
         // opcode=2, filename=Cargo.toml, mode=netascii
         let s = [
             0x00, 0x02, 0x43, 0x61, 0x72, 0x67, 0x6f, 0x2e, 0x74, 0x6f, 0x6d, 0x6c, 0x00, 0x6e,
             0x65, 0x74, 0x61, 0x73, 0x63, 0x69, 0x69, 0x00,
         ];
-        let res = WritePacket::parse(&s)?;
+        let res = WritePacket::parse(&s).unwrap();
         assert_eq!(res.filename, "Cargo.toml");
         assert_eq!(res.mode, Mode::NETASCII);
-        return Ok(());
     }
 
     #[test]
-    fn test_parse_wrq_with_illegal_mode() -> Result<()> {
+    fn test_parse_wrq_with_illegal_mode() {
         // opcode=2, filename=Cargo.toml, mode=n (illegal)
         let s = [
             0x00, 0x02, 0x43, 0x61, 0x72, 0x67, 0x6f, 0x2e, 0x74, 0x6f, 0x6d, 0x6c, 0x00, 0x6e,
@@ -355,24 +354,22 @@ mod tests {
         ];
         let res = WritePacket::parse(&s);
         assert!(res.is_err());
-        return Ok(());
     }
 
     #[test]
-    fn test_parse_rrq_ok() -> Result<()> {
+    fn test_parse_rrq_ok() {
         // opcode=1, filename=Cargo.toml, mode=netascii
         let s = [
             0x00, 0x01, 0x43, 0x61, 0x72, 0x67, 0x6f, 0x2e, 0x74, 0x6f, 0x6d, 0x6c, 0x00, 0x6e,
             0x65, 0x74, 0x61, 0x73, 0x63, 0x69, 0x69, 0x00,
         ];
-        let res = ReadPacket::parse(&s)?;
+        let res = ReadPacket::parse(&s).unwrap();
         assert_eq!(res.filename, "Cargo.toml");
         assert_eq!(res.mode, Mode::NETASCII);
-        return Ok(());
     }
 
     #[test]
-    fn test_parse_rrq_with_illegal_mode() -> Result<()> {
+    fn test_parse_rrq_with_illegal_mode() {
         // opcode=1, filename=Cargo.toml, mode=n (illegal)
         let s = [
             0x00, 0x01, 0x43, 0x61, 0x72, 0x67, 0x6f, 0x2e, 0x74, 0x6f, 0x6d, 0x6c, 0x00, 0x6e,
@@ -380,61 +377,55 @@ mod tests {
         ];
         let res = ReadPacket::parse(&s);
         assert!(res.is_err());
-        return Ok(());
     }
 
     #[test]
-    fn test_parse_ack() -> Result<()> {
+    fn test_parse_ack() {
         let s = [0x00, 0x04, 0x00, 0x01];
-        let ack = ACK::parse(&s)?;
+        let ack = ACK::parse(&s).unwrap();
         assert_eq!(ack.block(), 1);
-        return Ok(());
     }
 
     #[test]
-    fn test_encode_ack() -> Result<()> {
+    fn test_encode_ack() {
         let ack = ACK::new(1);
         assert_eq!(ack.encode(), vec![0x00, 0x04, 0x00, 0x01]);
-        return Ok(());
     }
 
     #[test]
-    fn test_parse_data() -> Result<()> {
+    fn test_parse_data() {
         let s = [0x00, 0x03, 0x00, 0x01, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
         let mode = Mode::OCTET;
-        let data = Data::parse(&s, &mode)?;
+        let data = Data::parse(&s, &mode).unwrap();
         assert_eq!(data.block(), 1);
         assert_eq!(data.data(), &s[4..]);
-        return Ok(());
     }
 
     #[test]
-    fn test_parse_data_netascii() -> Result<()> {
+    fn test_parse_data_netascii() {
         let s = [
             vec![0x00, 0x03, 0x00, 0x01],
             vec![b'a', b'\r', b'\0', b'a', b'\r', b'\n', b'a'],
         ]
         .concat();
         let mode = Mode::NETASCII;
-        let data = Data::parse(&s, &mode)?;
+        let data = Data::parse(&s, &mode).unwrap();
         assert_eq!(data.block(), 1);
         assert_eq!(data.data(), &vec![b'a', b'\r', b'a', b'\n', b'a']);
-        return Ok(());
     }
 
     #[test]
-    fn test_encode_data() -> Result<()> {
+    fn test_encode_data() {
         let data = Data::new(1, &b"hello"[..]);
         let mode = Mode::OCTET;
         assert_eq!(
             data.encode(&mode),
             vec![0x00, 0x03, 0x00, 0x01, 0x68, 0x65, 0x6c, 0x6c, 0x6f]
         );
-        return Ok(());
     }
 
     #[test]
-    fn test_encode_data_netascii() -> Result<()> {
+    fn test_encode_data_netascii() {
         let data = Data::new(1, &vec![b'a', b'\r', b'a', b'\n', b'a']);
         let mode = Mode::NETASCII;
         assert_eq!(
@@ -445,11 +436,10 @@ mod tests {
             ]
             .concat(),
         );
-        return Ok(());
     }
 
     #[test]
-    fn test_parse_error() -> Result<()> {
+    fn test_parse_error() {
         let data = [
             vec![0x00, 0x05, 0x00, 0x01],
             "File not found".to_string().as_bytes().to_vec(),
@@ -457,15 +447,13 @@ mod tests {
         ]
         .concat();
 
-        let pkt = Error::parse(&data)?;
+        let pkt = Error::parse(&data).unwrap();
         assert_eq!(pkt.error_code(), 1);
         assert_eq!(pkt.message(), "File not found");
-
-        return Ok(());
     }
 
     #[test]
-    fn test_encode_error() -> Result<()> {
+    fn test_encode_error() {
         let err = Error::new(TftpError::FileNotFound, "File not found".to_string());
         assert_eq!(
             err.encode(),
@@ -476,6 +464,5 @@ mod tests {
             ]
             .concat(),
         );
-        return Ok(());
     }
 }

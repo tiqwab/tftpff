@@ -541,8 +541,8 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
-    fn test_server_run() -> Result<()> {
-        let temp_dir = temp_dir::create_temp_dir()?;
+    fn test_server_run() {
+        let temp_dir = temp_dir::create_temp_dir().unwrap();
         let server_addr = Arc::new(Mutex::new(None));
         let rrq_queue = Arc::new(Mutex::new(vec![]));
         let wrq_queue = Arc::new(Mutex::new(vec![]));
@@ -562,7 +562,7 @@ mod tests {
             };
 
             let mut server = TftpServer::create_with_handlers(
-                Ipv4Addr::from_str("127.0.0.1")?,
+                Ipv4Addr::from_str("127.0.0.1").unwrap(),
                 0,
                 Box::new(rrq_handler),
                 Box::new(wrq_handler),
@@ -578,41 +578,43 @@ mod tests {
         thread::sleep(std::time::Duration::from_secs(1));
 
         let server_addr = server_addr.lock().unwrap().unwrap();
-        let sock_client = UdpSocket::bind(("127.0.0.1", 0))?;
+        let sock_client = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
 
         let rrq = ReadPacket::new("foo.txt".to_string(), Mode::OCTET);
         let wrq = WritePacket::new("bar.txt".to_string(), Mode::NETASCII);
-        sock_client.send_to(&rrq.encode()[..], server_addr)?;
-        sock_client.send_to(&wrq.encode()[..], server_addr)?;
+        sock_client.send_to(&rrq.encode()[..], server_addr).unwrap();
+        sock_client.send_to(&wrq.encode()[..], server_addr).unwrap();
         thread::sleep(std::time::Duration::from_secs(1));
         assert_eq!(rrq_queue.lock().unwrap().len(), 1);
         assert_eq!(wrq_queue.lock().unwrap().len(), 1);
-
-        return Ok(());
     }
 
     #[test]
-    fn test_rrq_handler() -> Result<()> {
+    fn test_rrq_handler() {
         //
         // setup
         //
-        let base_dir = temp_dir::create_temp_dir()?;
+        let base_dir = temp_dir::create_temp_dir().unwrap();
         let handler = create_rrq_handler(base_dir.path().to_owned());
 
         let test_file_name = "test_wrq_handler.txt";
         let test_file_content = [b'a'; 513];
         {
             // prepare test file
-            let mut test_file = fs::File::create(base_dir.path().join(test_file_name))?;
-            test_file.write_all(&test_file_content)?;
+            let mut test_file = fs::File::create(base_dir.path().join(test_file_name)).unwrap();
+            test_file.write_all(&test_file_content).unwrap();
         }
 
-        let sock_client = UdpSocket::bind(("127.0.0.1", 0))?;
-        let addr_client = sock_client.local_addr()?;
-        let sock_handler = UdpSocket::bind(("127.0.0.1", 0))?;
-        let addr_handler = sock_handler.local_addr()?;
-        sock_handler.set_read_timeout(Some(Duration::from_secs(1)))?;
-        sock_handler.set_write_timeout(Some(Duration::from_secs(1)))?;
+        let sock_client = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_client = sock_client.local_addr().unwrap();
+        let sock_handler = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_handler = sock_handler.local_addr().unwrap();
+        sock_handler
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        sock_handler
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         let rrq = packet::ReadPacket::new(test_file_name.to_string(), packet::Mode::OCTET);
 
         let _h = thread::spawn(move || {
@@ -626,42 +628,53 @@ mod tests {
         let mut actual_content: Vec<u8> = vec![];
         let mode = Mode::OCTET;
 
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let data = packet::Data::parse(&buf_client[..n_client], &mode)?;
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let data = packet::Data::parse(&buf_client[..n_client], &mode).unwrap();
         assert_eq!(data.data().len(), 512);
         actual_content.append(&mut data.data().to_owned());
-        sock_client.send_to(&packet::ACK::new(data.block()).encode(), addr_handler)?;
+        sock_client
+            .send_to(&packet::ACK::new(data.block()).encode(), addr_handler)
+            .unwrap();
 
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let data = packet::Data::parse(&buf_client[..n_client], &mode)?;
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let data = packet::Data::parse(&buf_client[..n_client], &mode).unwrap();
         assert_eq!(data.data().len(), 1);
         actual_content.append(&mut data.data().to_owned());
-        sock_client.send_to(&packet::ACK::new(data.block()).encode(), addr_handler)?;
+        sock_client
+            .send_to(&packet::ACK::new(data.block()).encode(), addr_handler)
+            .unwrap();
 
         assert_eq!(&actual_content, &test_file_content);
-        return Ok(());
     }
 
     #[test]
-    fn test_rrq_handler_with_error() -> Result<()> {
+    fn test_rrq_handler_with_error() {
         //
         // setup
         //
-        let base_dir = temp_dir::create_temp_dir()?;
+        let base_dir = temp_dir::create_temp_dir().unwrap();
         let handler = create_rrq_handler(base_dir.path().to_owned());
 
         // this file doesn't exist, which should cause TftpError::FileNotFound
         let test_file_name = "test_wrq_handler.txt";
 
-        let sock_client = UdpSocket::bind(("127.0.0.1", 0))?;
-        let addr_client = sock_client.local_addr()?;
-        sock_client.set_read_timeout(Some(Duration::from_secs(1)))?;
-        sock_client.set_write_timeout(Some(Duration::from_secs(1)))?;
+        let sock_client = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_client = sock_client.local_addr().unwrap();
+        sock_client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        sock_client
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
 
-        let sock_handler = UdpSocket::bind(("127.0.0.1", 0))?;
-        let addr_handler = sock_handler.local_addr()?;
-        sock_handler.set_read_timeout(Some(Duration::from_secs(1)))?;
-        sock_handler.set_write_timeout(Some(Duration::from_secs(1)))?;
+        let sock_handler = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_handler = sock_handler.local_addr().unwrap();
+        sock_handler
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        sock_handler
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
 
         let rrq = packet::ReadPacket::new(test_file_name.to_string(), packet::Mode::OCTET);
 
@@ -676,30 +689,32 @@ mod tests {
         let mut actual_content: Vec<u8> = vec![];
         let mode = Mode::OCTET;
 
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let err_pkt = packet::Error::parse(&buf_client[..n_client])?;
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let err_pkt = packet::Error::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(err_pkt.error_code(), TftpError::FileNotFound.error_code());
         assert_eq!(err_pkt.message(), "File not found");
-
-        return Ok(());
     }
 
     #[test]
-    fn test_wrq_handler() -> Result<()> {
+    fn test_wrq_handler() {
         //
         // setup
         //
-        let base_dir = temp_dir::create_temp_dir()?;
-        let temp_dir = temp_dir::create_temp_dir()?;
+        let base_dir = temp_dir::create_temp_dir().unwrap();
+        let temp_dir = temp_dir::create_temp_dir().unwrap();
         let test_file_name = "test_wrq_handler.txt";
         let handler = create_wrq_handler(base_dir.path().to_owned(), temp_dir.path().to_owned());
 
-        let sock_client = UdpSocket::bind(("127.0.0.1", 0))?;
-        let addr_client = sock_client.local_addr()?;
-        let sock_handler = UdpSocket::bind(("127.0.0.1", 0))?;
-        let addr_handler = sock_handler.local_addr()?;
-        sock_handler.set_read_timeout(Some(Duration::from_secs(1)))?;
-        sock_handler.set_write_timeout(Some(Duration::from_secs(1)))?;
+        let sock_client = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_client = sock_client.local_addr().unwrap();
+        let sock_handler = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_handler = sock_handler.local_addr().unwrap();
+        sock_handler
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        sock_handler
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         let wrq = packet::WritePacket::new(test_file_name.to_string(), packet::Mode::OCTET);
 
         let barrier_client = Arc::new(sync::Barrier::new(2));
@@ -716,51 +731,61 @@ mod tests {
         let content = [b'a'; 513];
         let mode = Mode::OCTET;
 
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let ack = packet::ACK::parse(&buf_client[..n_client])?;
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 0);
 
         let data = packet::Data::new(1, &content[..512]);
-        sock_client.send_to(&data.encode(&mode), addr_handler)?;
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let ack = packet::ACK::parse(&buf_client[..n_client])?;
+        sock_client
+            .send_to(&data.encode(&mode), addr_handler)
+            .unwrap();
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 1);
 
         let data = packet::Data::new(2, &content[512..]);
-        sock_client.send_to(&data.encode(&mode), addr_handler)?;
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let ack = packet::ACK::parse(&buf_client[..n_client])?;
+        sock_client
+            .send_to(&data.encode(&mode), addr_handler)
+            .unwrap();
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 2);
 
         barrier_client.wait();
-        let mut file = fs::File::open(base_dir.path().join(test_file_name))?;
+        let mut file = fs::File::open(base_dir.path().join(test_file_name)).unwrap();
         let mut actual_content = vec![];
-        file.read_to_end(&mut actual_content)?;
+        file.read_to_end(&mut actual_content).unwrap();
         assert_eq!(&actual_content, &content);
-
-        return Ok(());
     }
 
     #[test]
-    fn test_wrq_handler_with_error() -> Result<()> {
+    fn test_wrq_handler_with_error() {
         //
         // setup
         //
         let base_dir = Path::new("/tmp/tftpff-unknown");
 
-        let temp_dir = temp_dir::create_temp_dir()?;
+        let temp_dir = temp_dir::create_temp_dir().unwrap();
         let test_file_name = "test_wrq_handler.txt";
         let handler = create_wrq_handler(base_dir.to_owned(), temp_dir.path().to_owned());
 
-        let sock_client = UdpSocket::bind(("127.0.0.1", 0))?;
-        let addr_client = sock_client.local_addr()?;
-        sock_client.set_read_timeout(Some(Duration::from_secs(1)))?;
-        sock_client.set_write_timeout(Some(Duration::from_secs(1)))?;
+        let sock_client = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_client = sock_client.local_addr().unwrap();
+        sock_client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        sock_client
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
 
-        let sock_handler = UdpSocket::bind(("127.0.0.1", 0))?;
-        let addr_handler = sock_handler.local_addr()?;
-        sock_handler.set_read_timeout(Some(Duration::from_secs(1)))?;
-        sock_handler.set_write_timeout(Some(Duration::from_secs(1)))?;
+        let sock_handler = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_handler = sock_handler.local_addr().unwrap();
+        sock_handler
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        sock_handler
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
 
         let wrq = packet::WritePacket::new(test_file_name.to_string(), packet::Mode::OCTET);
 
@@ -778,29 +803,31 @@ mod tests {
         let content = [b'a'; 513];
         let mode = Mode::OCTET;
 
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let ack = packet::ACK::parse(&buf_client[..n_client])?;
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 0);
 
         let data = packet::Data::new(1, &content[..512]);
-        sock_client.send_to(&data.encode(&mode), addr_handler)?;
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let ack = packet::ACK::parse(&buf_client[..n_client])?;
+        sock_client
+            .send_to(&data.encode(&mode), addr_handler)
+            .unwrap();
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 1);
 
         let data = packet::Data::new(2, &content[512..]);
-        sock_client.send_to(&data.encode(&mode), addr_handler)?;
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let ack = packet::ACK::parse(&buf_client[..n_client])?;
+        sock_client
+            .send_to(&data.encode(&mode), addr_handler)
+            .unwrap();
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 2);
 
         barrier_client.wait();
 
-        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
-        let err = packet::Error::parse(&buf_client[..n_client])?;
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let err = packet::Error::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(err.error_code(), TftpError::FileNotFound.error_code());
         assert_eq!(err.message(), "File not found");
-
-        return Ok(());
     }
 }
