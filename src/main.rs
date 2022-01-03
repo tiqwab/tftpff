@@ -4,7 +4,7 @@ use std::net::Ipv4Addr;
 use std::path::Path;
 use std::str::FromStr;
 use tftpff::server;
-use tftpff::temp_dir;
+use tftpff::temp;
 
 fn main() -> Result<()> {
     env_logger::init();
@@ -12,7 +12,7 @@ fn main() -> Result<()> {
     let server_addr = Ipv4Addr::from_str("0.0.0.0")?;
     let server_port = 12345;
     let base_dir = Path::new("/tmp/tftpff");
-    let temp_dir = temp_dir::create_temp_dir()?;
+    let temp_dir = temp::create_temp_dir()?;
 
     let mut server = server::TftpServer::create(
         server_addr,

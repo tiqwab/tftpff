@@ -1,6 +1,6 @@
 use crate::error::{TftpError, TftpErrorNotifier};
 use crate::packet::{ReadPacket, WritePacket};
-use crate::{packet, temp_dir};
+use crate::{packet, temp};
 use anyhow::{bail, Context, Result};
 use log::{debug, error, warn};
 use std::io::{ErrorKind, Read, Write};
@@ -29,9 +29,7 @@ impl TftpServer {
         temp_dir: impl AsRef<Path> + Send + Sync + 'static,
     ) -> Result<TftpServer> {
         let rrq_handler = create_rrq_handler(base_dir.as_ref().to_owned());
-        let wrq_handler =
-            // create_wrq_handler(base_dir.as_ref().to_owned(), temp_dir.as_ref().to_owned());
-            create_wrq_handler(base_dir, temp_dir);
+        let wrq_handler = create_wrq_handler(base_dir, temp_dir);
         Ok(TftpServer {
             server_addr,
             server_port,
@@ -458,7 +456,11 @@ pub fn create_wrq_handler(
         sock.send_to(&ack.encode(), client_addr)?;
         debug!("[{}] sent ack: {:?}", client_addr, ack);
 
-        let temp_file_path = temp_dir.as_ref().join(&wrq.filename);
+        let temp_file_path = temp_dir.as_ref().join(format!(
+            "{}.{}",
+            &wrq.filename,
+            temp::generate_random_name()?
+        ));
         let mut temp_file = fs::File::create(&temp_file_path)?;
         debug!("[{}] created {:?}", client_addr, temp_file_path);
 
@@ -534,7 +536,7 @@ pub fn create_wrq_handler(
 mod tests {
     use super::*;
     use crate::packet::Mode;
-    use crate::temp_dir;
+    use crate::temp;
     use std::net::SocketAddrV4;
     use std::str::FromStr;
     use std::sync;
@@ -542,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_server_run() {
-        let temp_dir = temp_dir::create_temp_dir().unwrap();
+        let temp_dir = temp::create_temp_dir().unwrap();
         let server_addr = Arc::new(Mutex::new(None));
         let rrq_queue = Arc::new(Mutex::new(vec![]));
         let wrq_queue = Arc::new(Mutex::new(vec![]));
@@ -594,7 +596,7 @@ mod tests {
         //
         // setup
         //
-        let base_dir = temp_dir::create_temp_dir().unwrap();
+        let base_dir = temp::create_temp_dir().unwrap();
         let handler = create_rrq_handler(base_dir.path().to_owned());
 
         let test_file_name = "test_wrq_handler.txt";
@@ -652,7 +654,7 @@ mod tests {
         //
         // setup
         //
-        let base_dir = temp_dir::create_temp_dir().unwrap();
+        let base_dir = temp::create_temp_dir().unwrap();
         let handler = create_rrq_handler(base_dir.path().to_owned());
 
         // this file doesn't exist, which should cause TftpError::FileNotFound
@@ -700,8 +702,8 @@ mod tests {
         //
         // setup
         //
-        let base_dir = temp_dir::create_temp_dir().unwrap();
-        let temp_dir = temp_dir::create_temp_dir().unwrap();
+        let base_dir = temp::create_temp_dir().unwrap();
+        let temp_dir = temp::create_temp_dir().unwrap();
         let test_file_name = "test_wrq_handler.txt";
         let handler = create_wrq_handler(base_dir.path().to_owned(), temp_dir.path().to_owned());
 
@@ -765,7 +767,7 @@ mod tests {
         //
         let base_dir = Path::new("/tmp/tftpff-unknown");
 
-        let temp_dir = temp_dir::create_temp_dir().unwrap();
+        let temp_dir = temp::create_temp_dir().unwrap();
         let test_file_name = "test_wrq_handler.txt";
         let handler = create_wrq_handler(base_dir.to_owned(), temp_dir.path().to_owned());
 

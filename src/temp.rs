@@ -14,7 +14,7 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
         let rand_str = String::from_iter(('a'..='z').choose_multiple(&mut thread_rng(), 7));
-        let dirname = format!("tftpff-{}-{}", epoch_seconds, rand_str);
+        let dirname = format!("tftpff-{}", generate_random_name()?);
         let p = temp_dir().join(dirname);
 
         std::fs::create_dir(&p)
@@ -38,6 +38,14 @@ impl Drop for TempDir {
             ()
         });
     }
+}
+
+pub fn generate_random_name() -> Result<String> {
+    let epoch_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let rand_str = String::from_iter(('a'..='z').choose_multiple(&mut thread_rng(), 7));
+    Ok(format!("{}-{}", epoch_seconds, rand_str))
 }
 
 pub fn create_temp_dir() -> Result<TempDir> {
