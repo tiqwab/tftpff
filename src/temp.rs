@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use log::error;
+use log::{debug, error};
 use rand::prelude::*;
 use std::env::temp_dir;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ impl TempDir {
         std::fs::create_dir(&p)
             .with_context(|| format!("Failed to create temporary directory at {:?}", p))?;
 
+        debug!("created temporary directory at {:?}", p);
         Ok(TempDir { path: p })
     }
 

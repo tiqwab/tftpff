@@ -7,6 +7,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -66,6 +67,7 @@ impl TftpServer {
         let server_sock_addr = SocketAddr::from((self.server_addr, self.server_port));
         let server_sock =
             UdpSocket::bind(server_sock_addr).context("Failed to bind server_sock")?;
+        server_sock.set_read_timeout(Some(Duration::from_secs(1)))?;
         debug!("listening at {}:{}", self.server_addr, self.server_port);
         self.server_sock = Some(server_sock);
         return Ok(());
@@ -74,11 +76,25 @@ impl TftpServer {
     pub fn run(&self) -> Result<()> {
         let server_sock = self.server_sock.as_ref().unwrap();
 
-        loop {
+        // for graceful shutdown
+        let term = Arc::new(AtomicBool::new(false));
+        for &sig in signal_hook::consts::TERM_SIGNALS.iter() {
+            signal_hook::flag::register(sig, Arc::clone(&term))?;
+        }
+
+        while !term.load(Ordering::Relaxed) {
             let mut client_buf = [0; 1024];
-            let (client_n, client_addr) = server_sock
-                .recv_from(&mut client_buf)
-                .context("Failed to receive request packet")?;
+            let (client_n, client_addr) = match server_sock.recv_from(&mut client_buf) {
+                Ok(res) => res,
+                Err(err)
+                    if [ErrorKind::WouldBlock, ErrorKind::Interrupted].contains(&err.kind()) =>
+                {
+                    continue;
+                }
+                Err(err) => {
+                    bail!("Failed to receive request packet: {:?}", err);
+                }
+            };
 
             match packet::InitialPacket::parse(&client_buf[..client_n]) {
                 Ok(packet::InitialPacket::WRQ(wrq)) => {
@@ -110,6 +126,8 @@ impl TftpServer {
                 }
             }
         }
+
+        Ok(())
     }
 
     fn spawn_rrq(
