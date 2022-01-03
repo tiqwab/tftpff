@@ -1,3 +1,4 @@
+use crate::error::TftpError;
 use anyhow::{anyhow, bail, Result};
 use std::fmt;
 use std::fmt::Formatter;
@@ -274,6 +275,60 @@ impl fmt::Display for Data {
     }
 }
 
+#[derive(Debug)]
+pub struct Error {
+    err: TftpError,
+    msg: String,
+}
+
+impl Error {
+    const OPCODE: u16 = 0x05;
+
+    pub fn new(err: TftpError, msg: String) -> Error {
+        Error { err, msg }
+    }
+
+    pub fn error_code(&self) -> u16 {
+        self.err.error_code()
+    }
+
+    pub fn message(&self) -> &str {
+        &self.msg
+    }
+
+    pub fn parse(data: &[u8]) -> Result<Error> {
+        //  2 bytes     2 bytes      string    1 byte
+        //  -----------------------------------------
+        // | Opcode |  ErrorCode |   ErrMsg   |   0  |
+        //  -----------------------------------------
+        let opcode = u16::from_be_bytes(data[..2].try_into()?);
+        if opcode != Error::OPCODE {
+            bail!("Illegal opcode as Error");
+        }
+
+        let error_code = u16::from_be_bytes(data[2..4].try_into()?);
+        let tftp_error = TftpError::from_u16(error_code).ok_or(anyhow!("Illegal error code"))?;
+
+        if data.last() != Some(&b'\0') {
+            bail!("Illegal packet as Error");
+        }
+
+        let msg = String::from_utf8_lossy(&data[4..(data.len() - 1)]).to_string();
+
+        Ok(Error {
+            err: tftp_error,
+            msg,
+        })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let opcode = Error::OPCODE.to_be_bytes().to_vec();
+        let error_code = self.err.error_code().to_be_bytes().to_vec();
+        let msg = self.msg.as_bytes().to_vec();
+        [opcode, error_code, msg, vec![b'\0']].concat()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +442,37 @@ mod tests {
             [
                 vec![0x00, 0x03, 0x00, 0x01],
                 vec![b'a', b'\r', b'\0', b'a', b'\r', b'\n', b'a']
+            ]
+            .concat(),
+        );
+        return Ok(());
+    }
+
+    #[test]
+    fn test_parse_error() -> Result<()> {
+        let data = [
+            vec![0x00, 0x05, 0x00, 0x01],
+            "File not found".to_string().as_bytes().to_vec(),
+            vec![b'\0'],
+        ]
+        .concat();
+
+        let pkt = Error::parse(&data)?;
+        assert_eq!(pkt.error_code(), 1);
+        assert_eq!(pkt.message(), "File not found");
+
+        return Ok(());
+    }
+
+    #[test]
+    fn test_encode_error() -> Result<()> {
+        let err = Error::new(TftpError::FileNotFound, "File not found".to_string());
+        assert_eq!(
+            err.encode(),
+            [
+                vec![0x00, 0x05, 0x00, 0x01],
+                "File not found".to_string().as_bytes().to_vec(),
+                vec![b'\0'],
             ]
             .concat(),
         );

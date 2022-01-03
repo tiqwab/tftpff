@@ -1,3 +1,4 @@
+use crate::error::{TftpError, TftpErrorNotifier};
 use crate::packet::{ReadPacket, WritePacket};
 use crate::{packet, temp_dir};
 use anyhow::{bail, Context, Result};
@@ -302,8 +303,9 @@ pub fn create_rrq_handler(
         debug!("[{}] received RRQ: {:?}", client_addr, rrq);
 
         let src_path = base_dir.join(&rrq.filename);
-        let mut file =
-            fs::File::open(&src_path).with_context(|| format!("Failed to open {:?}", src_path))?;
+        let mut file = fs::File::open(&src_path)
+            .notify_error(&sock, &client_addr)
+            .with_context(|| format!("Failed to open {:?}", src_path))?;
         let mut file_buf = [0 as u8; 512];
         let mut file_n = file.read(&mut file_buf)?;
 
@@ -520,7 +522,9 @@ pub fn create_wrq_handler(
         }
 
         let dest_path = base_dir.as_ref().join(&wrq.filename);
-        fs::rename(temp_file_path, dest_path)?;
+        fs::rename(&temp_file_path, &dest_path)
+            .notify_error(&sock, &client_addr)
+            .with_context(|| format!("Failed to mv {:?} to {:?}", temp_file_path, dest_path))?;
         debug!("[{}] finish WRQ for {:?}", client_addr, wrq.filename);
         return Ok(());
     }
@@ -609,10 +613,10 @@ mod tests {
         let addr_handler = sock_handler.local_addr()?;
         sock_handler.set_read_timeout(Some(Duration::from_secs(1)))?;
         sock_handler.set_write_timeout(Some(Duration::from_secs(1)))?;
-        let wrq = packet::ReadPacket::new(test_file_name.to_string(), packet::Mode::OCTET);
+        let rrq = packet::ReadPacket::new(test_file_name.to_string(), packet::Mode::OCTET);
 
         let _h = thread::spawn(move || {
-            handler(sock_handler, addr_client, wrq);
+            handler(sock_handler, addr_client, rrq);
         });
 
         //
@@ -635,6 +639,48 @@ mod tests {
         sock_client.send_to(&packet::ACK::new(data.block()).encode(), addr_handler)?;
 
         assert_eq!(&actual_content, &test_file_content);
+        return Ok(());
+    }
+
+    #[test]
+    fn test_rrq_handler_with_error() -> Result<()> {
+        //
+        // setup
+        //
+        let base_dir = temp_dir::create_temp_dir()?;
+        let handler = create_rrq_handler(base_dir.path().to_owned());
+
+        // this file doesn't exist, which should cause TftpError::FileNotFound
+        let test_file_name = "test_wrq_handler.txt";
+
+        let sock_client = UdpSocket::bind(("127.0.0.1", 0))?;
+        let addr_client = sock_client.local_addr()?;
+        sock_client.set_read_timeout(Some(Duration::from_secs(1)))?;
+        sock_client.set_write_timeout(Some(Duration::from_secs(1)))?;
+
+        let sock_handler = UdpSocket::bind(("127.0.0.1", 0))?;
+        let addr_handler = sock_handler.local_addr()?;
+        sock_handler.set_read_timeout(Some(Duration::from_secs(1)))?;
+        sock_handler.set_write_timeout(Some(Duration::from_secs(1)))?;
+
+        let rrq = packet::ReadPacket::new(test_file_name.to_string(), packet::Mode::OCTET);
+
+        let _h = thread::spawn(move || {
+            handler(sock_handler, addr_client, rrq);
+        });
+
+        //
+        // exercise and verify
+        //
+        let mut buf_client = [0; 1024];
+        let mut actual_content: Vec<u8> = vec![];
+        let mode = Mode::OCTET;
+
+        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
+        let err_pkt = packet::Error::parse(&buf_client[..n_client])?;
+        assert_eq!(err_pkt.error_code(), TftpError::FileNotFound.error_code());
+        assert_eq!(err_pkt.message(), "File not found");
+
         return Ok(());
     }
 
@@ -691,6 +737,69 @@ mod tests {
         let mut actual_content = vec![];
         file.read_to_end(&mut actual_content)?;
         assert_eq!(&actual_content, &content);
+
+        return Ok(());
+    }
+
+    #[test]
+    fn test_wrq_handler_with_error() -> Result<()> {
+        //
+        // setup
+        //
+        let base_dir = Path::new("/tmp/tftpff-unknown");
+
+        let temp_dir = temp_dir::create_temp_dir()?;
+        let test_file_name = "test_wrq_handler.txt";
+        let handler = create_wrq_handler(base_dir.to_owned(), temp_dir.path().to_owned());
+
+        let sock_client = UdpSocket::bind(("127.0.0.1", 0))?;
+        let addr_client = sock_client.local_addr()?;
+        sock_client.set_read_timeout(Some(Duration::from_secs(1)))?;
+        sock_client.set_write_timeout(Some(Duration::from_secs(1)))?;
+
+        let sock_handler = UdpSocket::bind(("127.0.0.1", 0))?;
+        let addr_handler = sock_handler.local_addr()?;
+        sock_handler.set_read_timeout(Some(Duration::from_secs(1)))?;
+        sock_handler.set_write_timeout(Some(Duration::from_secs(1)))?;
+
+        let wrq = packet::WritePacket::new(test_file_name.to_string(), packet::Mode::OCTET);
+
+        let barrier_client = Arc::new(sync::Barrier::new(2));
+        let barrier_handler = Arc::clone(&barrier_client);
+        let _h = thread::spawn(move || {
+            handler(sock_handler, addr_client, wrq);
+            barrier_handler.wait();
+        });
+
+        //
+        // exercise and verify
+        //
+        let mut buf_client = [0; 1024];
+        let content = [b'a'; 513];
+        let mode = Mode::OCTET;
+
+        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
+        let ack = packet::ACK::parse(&buf_client[..n_client])?;
+        assert_eq!(ack.block(), 0);
+
+        let data = packet::Data::new(1, &content[..512]);
+        sock_client.send_to(&data.encode(&mode), addr_handler)?;
+        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
+        let ack = packet::ACK::parse(&buf_client[..n_client])?;
+        assert_eq!(ack.block(), 1);
+
+        let data = packet::Data::new(2, &content[512..]);
+        sock_client.send_to(&data.encode(&mode), addr_handler)?;
+        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
+        let ack = packet::ACK::parse(&buf_client[..n_client])?;
+        assert_eq!(ack.block(), 2);
+
+        barrier_client.wait();
+
+        let (n_client, _) = sock_client.recv_from(&mut buf_client)?;
+        let err = packet::Error::parse(&buf_client[..n_client])?;
+        assert_eq!(err.error_code(), TftpError::FileNotFound.error_code());
+        assert_eq!(err.message(), "File not found");
 
         return Ok(());
     }

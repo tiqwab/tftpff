@@ -1,5 +1,3 @@
-mod packet;
-
 use anyhow::{bail, Context, Result};
 use log::{debug, error, warn};
 use std::net::Ipv4Addr;
