@@ -185,7 +185,7 @@ mod tests {
         //
         // setup
         //
-        let data = [b'a'; 1024];
+        let data = [vec![b'a'; 1022], vec![b'\n']].concat();
 
         let temp_dir = temp::create_temp_dir().unwrap();
         let file_path = temp_dir.path().join("test_read.txt");
@@ -195,7 +195,7 @@ mod tests {
         //
         // exercise and verify
         //
-        let mut my_file = File::open(&file_path, packet::Mode::OCTET).unwrap();
+        let mut my_file = File::open(&file_path, packet::Mode::NETASCII).unwrap();
         let mut my_buf = [0; 512];
         assert!(my_file.has_next());
         assert_eq!(my_file.read(&mut my_buf).unwrap(), 512);
