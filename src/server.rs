@@ -1,6 +1,6 @@
 use crate::error::{TftpError, TftpErrorNotifier};
 use crate::packet::{ReadPacket, WritePacket};
-use crate::{packet, temp};
+use crate::{file, packet, temp};
 use anyhow::{bail, Context, Result};
 use log::{debug, error, warn};
 use std::io::{ErrorKind, Read, Write};
@@ -190,17 +190,21 @@ enum RrqHandlingState {
 impl RrqHandlingState {
     const MAX_TRIAL_COUNT: u16 = 5;
 
-    fn new(data: Vec<u8>, file_size: u64) -> RrqHandlingState {
-        if file_size % 512 == 0 {
-            RrqHandlingState::RequestAccepted1 {
-                trial_count: 0,
-                data,
-            }
-        } else {
-            RrqHandlingState::RequestAccepted2 {
-                trial_count: 0,
-                data,
-            }
+    fn new(data: Vec<u8>) -> RrqHandlingState {
+        // if file_size % 512 == 0 {
+        //     RrqHandlingState::RequestAccepted1 {
+        //         trial_count: 0,
+        //         data,
+        //     }
+        // } else {
+        //     RrqHandlingState::RequestAccepted2 {
+        //         trial_count: 0,
+        //         data,
+        //     }
+        // }
+        RrqHandlingState::RequestAccepted1 {
+            trial_count: 0,
+            data,
         }
     }
 
@@ -319,18 +323,17 @@ pub fn create_rrq_handler(
         debug!("[{}] received RRQ: {:?}", client_addr, rrq);
 
         let src_path = base_dir.join(&rrq.filename);
-        let mut file = fs::File::open(&src_path)
+        let mut file = file::File::open(&src_path, rrq.mode)
             .notify_error(&sock, &client_addr)
             .with_context(|| format!("Failed to open {:?}", src_path))?;
         let mut file_buf = [0 as u8; 512];
         let mut file_n = file.read(&mut file_buf)?;
 
         let mut buf = [0; 1024];
-        let mut state =
-            RrqHandlingState::new((&file_buf[..file_n]).to_owned(), file.metadata()?.size());
+        let mut state = RrqHandlingState::new((&file_buf[..file_n]).to_owned());
 
         let data = state.prepare_packet().unwrap();
-        sock.send_to(&data.encode(&rrq.mode), client_addr)?;
+        sock.send_to(&data.encode(), client_addr)?;
         debug!("[{}] sent data: {}", client_addr, data);
 
         loop {
@@ -341,7 +344,7 @@ pub fn create_rrq_handler(
                     match state.prepare_packet() {
                         Some(pkt) => {
                             // retransmit
-                            sock.send_to(&pkt.encode(&rrq.mode), client_addr)?;
+                            sock.send_to(&pkt.encode(), client_addr)?;
                             debug!(
                                 "[{}] sent data again (trial_count={}): {}",
                                 client_addr,
@@ -372,17 +375,21 @@ pub fn create_rrq_handler(
             match packet::ACK::parse(&buf[..ack_n]) {
                 Ok(pkt) if pkt.block() == state.block() => {
                     debug!("[{}] received ack: {:?}", client_addr, pkt);
-                    file_n = file.read(&mut file_buf)?;
-                    state = state.next(file_buf[..file_n].to_owned());
-                    match state.prepare_packet() {
-                        Some(data) => {
-                            sock.send_to(&data.encode(&rrq.mode), client_addr)?;
-                            debug!("[{}] sent data: {}", client_addr, data);
+                    if file.has_next() {
+                        file_n = file.read(&mut file_buf)?;
+                        state = state.next(file_buf[..file_n].to_owned());
+                        match state.prepare_packet() {
+                            Some(data) => {
+                                sock.send_to(&data.encode(), client_addr)?;
+                                debug!("[{}] sent data: {}", client_addr, data);
+                            }
+                            None => {
+                                // sent all data
+                                break;
+                            }
                         }
-                        None => {
-                            // sent all data
-                            break;
-                        }
+                    } else {
+                        break;
                     }
                 }
                 Ok(_pkt) => {
@@ -479,7 +486,7 @@ pub fn create_wrq_handler(
             &wrq.filename,
             temp::generate_random_name()?
         ));
-        let mut temp_file = fs::File::create(&temp_file_path)?;
+        let mut temp_file = file::File::create(&temp_file_path, wrq.mode)?;
         debug!("[{}] created {:?}", client_addr, temp_file_path);
 
         loop {
@@ -518,7 +525,7 @@ pub fn create_wrq_handler(
                 continue;
             }
 
-            match packet::Data::parse(&buf[..data_n], &wrq.mode) {
+            match packet::Data::parse(&buf[..data_n]) {
                 Ok(pkt) => {
                     debug!("[{}] received data: size={}", client_addr, pkt.data().len());
                     temp_file.write(pkt.data())?;
@@ -649,7 +656,7 @@ mod tests {
         let mode = Mode::OCTET;
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
-        let data = packet::Data::parse(&buf_client[..n_client], &mode).unwrap();
+        let data = packet::Data::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(data.data().len(), 512);
         actual_content.append(&mut data.data().to_owned());
         sock_client
@@ -657,8 +664,74 @@ mod tests {
             .unwrap();
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
-        let data = packet::Data::parse(&buf_client[..n_client], &mode).unwrap();
+        let data = packet::Data::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(data.data().len(), 1);
+        actual_content.append(&mut data.data().to_owned());
+        sock_client
+            .send_to(&packet::ACK::new(data.block()).encode(), addr_handler)
+            .unwrap();
+
+        assert_eq!(&actual_content, &test_file_content);
+    }
+
+    #[test]
+    fn test_rrq_handler_with_512_multiple_bytes() {
+        //
+        // setup
+        //
+        let base_dir = temp::create_temp_dir().unwrap();
+        let handler = create_rrq_handler(base_dir.path().to_owned());
+
+        let test_file_name = "test_wrq_handler.txt";
+        let test_file_content = [b'a'; 1024];
+        {
+            // prepare test file
+            let mut test_file = fs::File::create(base_dir.path().join(test_file_name)).unwrap();
+            test_file.write_all(&test_file_content).unwrap();
+        }
+
+        let sock_client = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_client = sock_client.local_addr().unwrap();
+        let sock_handler = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let addr_handler = sock_handler.local_addr().unwrap();
+        sock_handler
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        sock_handler
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let rrq = packet::ReadPacket::new(test_file_name.to_string(), packet::Mode::OCTET);
+
+        let _h = thread::spawn(move || {
+            handler(sock_handler, addr_client, rrq);
+        });
+
+        //
+        // exercise and verify
+        //
+        let mut buf_client = [0; 1024];
+        let mut actual_content: Vec<u8> = vec![];
+        let mode = Mode::OCTET;
+
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let data = packet::Data::parse(&buf_client[..n_client]).unwrap();
+        assert_eq!(data.data().len(), 512);
+        actual_content.append(&mut data.data().to_owned());
+        sock_client
+            .send_to(&packet::ACK::new(data.block()).encode(), addr_handler)
+            .unwrap();
+
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let data = packet::Data::parse(&buf_client[..n_client]).unwrap();
+        assert_eq!(data.data().len(), 512);
+        actual_content.append(&mut data.data().to_owned());
+        sock_client
+            .send_to(&packet::ACK::new(data.block()).encode(), addr_handler)
+            .unwrap();
+
+        let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
+        let data = packet::Data::parse(&buf_client[..n_client]).unwrap();
+        assert_eq!(data.data().len(), 0);
         actual_content.append(&mut data.data().to_owned());
         sock_client
             .send_to(&packet::ACK::new(data.block()).encode(), addr_handler)
@@ -756,17 +829,13 @@ mod tests {
         assert_eq!(ack.block(), 0);
 
         let data = packet::Data::new(1, &content[..512]);
-        sock_client
-            .send_to(&data.encode(&mode), addr_handler)
-            .unwrap();
+        sock_client.send_to(&data.encode(), addr_handler).unwrap();
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
         let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 1);
 
         let data = packet::Data::new(2, &content[512..]);
-        sock_client
-            .send_to(&data.encode(&mode), addr_handler)
-            .unwrap();
+        sock_client.send_to(&data.encode(), addr_handler).unwrap();
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
         let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 2);
@@ -828,17 +897,13 @@ mod tests {
         assert_eq!(ack.block(), 0);
 
         let data = packet::Data::new(1, &content[..512]);
-        sock_client
-            .send_to(&data.encode(&mode), addr_handler)
-            .unwrap();
+        sock_client.send_to(&data.encode(), addr_handler).unwrap();
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
         let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 1);
 
         let data = packet::Data::new(2, &content[512..]);
-        sock_client
-            .send_to(&data.encode(&mode), addr_handler)
-            .unwrap();
+        sock_client.send_to(&data.encode(), addr_handler).unwrap();
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
         let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
         assert_eq!(ack.block(), 2);
