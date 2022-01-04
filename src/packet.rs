@@ -1,7 +1,8 @@
 use crate::error::TftpError;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::fmt;
 use std::fmt::Formatter;
+use std::path::Path;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -80,7 +81,11 @@ impl WritePacket {
         if bs.len() != 3 {
             bail!("Illegal packet as WRQ");
         }
-        let filename = String::from_utf8_lossy(bs[0]).into_owned();
+        let raw_filename = String::from_utf8_lossy(bs[0]).into_owned();
+        let filename = Path::new(&raw_filename)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or(anyhow!("Illegal format of filename: {}", raw_filename))?;
         let mode = Mode::parse(bs[1]).ok_or(anyhow!("Failed to parse mode"))?;
         Ok(WritePacket { filename, mode })
     }
@@ -120,7 +125,11 @@ impl ReadPacket {
         if bs.len() != 3 {
             bail!("Illegal packet as RRQ");
         }
-        let filename = String::from_utf8_lossy(bs[0]).into_owned();
+        let raw_filename = String::from_utf8_lossy(bs[0]).into_owned();
+        let filename = Path::new(&raw_filename)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or(anyhow!("Illegal format of filename: {}", raw_filename))?;
         let mode = Mode::parse(bs[1]).ok_or(anyhow!("Failed to parse mode"))?;
         Ok(ReadPacket { filename, mode })
     }
@@ -357,6 +366,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_wrq_only_use_filename() {
+        // opcode=2, filename=/foo/bar.txt, mode=netascii
+        let s = [
+            0x00, 0x02, 0x2f, 0x66, 0x6f, 0x6f, 0x2f, 0x62, 0x61, 0x72, 0x2e, 0x74, 0x78, 0x74,
+            0x00, 0x6e, 0x65, 0x74, 0x61, 0x73, 0x63, 0x69, 0x69, 0x00,
+        ];
+        let res = WritePacket::parse(&s).unwrap();
+        assert_eq!(res.filename, "bar.txt");
+        assert_eq!(res.mode, Mode::NETASCII);
+    }
+
+    #[test]
     fn test_parse_rrq_ok() {
         // opcode=1, filename=Cargo.toml, mode=netascii
         let s = [
@@ -377,6 +398,18 @@ mod tests {
         ];
         let res = ReadPacket::parse(&s);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_parse_rrq_only_use_filename() {
+        // opcode=1, filename=/foo/bar.txt, mode=netascii
+        let s = [
+            0x00, 0x01, 0x2f, 0x66, 0x6f, 0x6f, 0x2f, 0x62, 0x61, 0x72, 0x2e, 0x74, 0x78, 0x74,
+            0x00, 0x6e, 0x65, 0x74, 0x61, 0x73, 0x63, 0x69, 0x69, 0x00,
+        ];
+        let res = ReadPacket::parse(&s).unwrap();
+        assert_eq!(res.filename, "bar.txt");
+        assert_eq!(res.mode, Mode::NETASCII);
     }
 
     #[test]
