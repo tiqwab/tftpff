@@ -159,76 +159,41 @@ impl TftpServer {
     }
 }
 
-enum RrqHandlingState {
-    RequestAccepted {
-        trial_count: u16,
-        data: Vec<u8>,
-    },
-    DataAccepted {
-        block: u16,
-        trial_count: u16,
-        data: Vec<u8>,
-    },
-    EmptyDataAccepted {
-        block: u16,
-        trial_count: u16,
-    },
-    Completed,
+struct RrqHandlingState {
+    block: u16,
+    trial_count: u16,
+    data: Vec<u8>,
 }
 
 impl RrqHandlingState {
     const MAX_TRIAL_COUNT: u16 = 5;
 
-    fn new(data: Vec<u8>) -> RrqHandlingState {
-        RrqHandlingState::RequestAccepted {
+    fn new() -> RrqHandlingState {
+        RrqHandlingState {
+            block: 0,
             trial_count: 0,
-            data,
+            data: vec![],
         }
     }
 
     fn block(&self) -> u16 {
-        // FIXME: panic
-        match self {
-            RrqHandlingState::RequestAccepted { .. } => 1,
-            RrqHandlingState::DataAccepted { block, .. } => block.clone(),
-            RrqHandlingState::EmptyDataAccepted { block, .. } => block.clone(),
-            RrqHandlingState::Completed => panic!("shouldn't call block() for Completed"),
-        }
+        self.block.clone()
     }
 
     fn data(&self) -> &[u8] {
-        // FIXME: panic
-        match self {
-            RrqHandlingState::RequestAccepted { data, .. } => data,
-            RrqHandlingState::DataAccepted { data, .. } => data,
-            RrqHandlingState::EmptyDataAccepted { .. } => Default::default(),
-            RrqHandlingState::Completed => panic!("shouldn't call data() for Completed"),
-        }
+        self.data.as_slice()
     }
 
     fn trial_count(&self) -> u16 {
-        // FIXME: panic
-        (match self {
-            RrqHandlingState::RequestAccepted { trial_count, .. } => trial_count,
-            RrqHandlingState::DataAccepted { trial_count, .. } => trial_count,
-            RrqHandlingState::EmptyDataAccepted { trial_count, .. } => trial_count,
-            RrqHandlingState::Completed => panic!("shouldn't call trial_count() for Completed"),
-        })
-        .clone()
+        self.trial_count.clone()
     }
 
     fn increment_trial_count(&mut self) -> Option<u16> {
-        let cur = match self {
-            RrqHandlingState::RequestAccepted { trial_count, .. } => trial_count,
-            RrqHandlingState::DataAccepted { trial_count, .. } => trial_count,
-            RrqHandlingState::EmptyDataAccepted { trial_count, .. } => trial_count,
-            RrqHandlingState::Completed => return None,
-        };
-        if *cur >= Self::MAX_TRIAL_COUNT {
+        if self.trial_count() >= Self::MAX_TRIAL_COUNT {
             None
         } else {
-            *cur += 1;
-            Some(cur.clone())
+            self.trial_count += 1;
+            Some(self.trial_count())
         }
     }
 
@@ -237,40 +202,10 @@ impl RrqHandlingState {
             .map(|_| packet::Data::new(self.block(), self.data()))
     }
 
-    fn next(self, data: Vec<u8>) -> Self {
-        assert!(data.len() <= 512);
-        if data.len() > 0 {
-            // FIXME: cannot be Completed here
-            match self {
-                RrqHandlingState::RequestAccepted { .. } => RrqHandlingState::DataAccepted {
-                    block: 2,
-                    trial_count: 0,
-                    data,
-                },
-                RrqHandlingState::DataAccepted { block, .. } => RrqHandlingState::DataAccepted {
-                    block: block + 1,
-                    trial_count: 0,
-                    data,
-                },
-                RrqHandlingState::EmptyDataAccepted { .. } => self,
-                RrqHandlingState::Completed => RrqHandlingState::Completed,
-            }
-        } else {
-            match self {
-                RrqHandlingState::RequestAccepted { .. } => RrqHandlingState::EmptyDataAccepted {
-                    block: 2,
-                    trial_count: 0,
-                },
-                RrqHandlingState::DataAccepted { block, .. } => {
-                    RrqHandlingState::EmptyDataAccepted {
-                        block: block + 1,
-                        trial_count: 0,
-                    }
-                }
-                RrqHandlingState::EmptyDataAccepted { .. } => RrqHandlingState::Completed,
-                RrqHandlingState::Completed => RrqHandlingState::Completed,
-            }
-        }
+    fn next(&mut self, data: Vec<u8>) {
+        self.block += 1;
+        self.trial_count = 0;
+        self.data = data;
     }
 }
 
@@ -288,7 +223,8 @@ pub fn create_rrq_handler(
         let mut file_n = file.read(&mut file_buf)?;
 
         let mut buf = [0; 1024];
-        let mut state = RrqHandlingState::new((&file_buf[..file_n]).to_owned());
+        let mut state = RrqHandlingState::new();
+        state.next(file_buf[..file_n].to_owned());
 
         let data = state.prepare_packet().unwrap();
         sock.send_to(&data.encode(), client_addr)?;
@@ -335,15 +271,15 @@ pub fn create_rrq_handler(
                     debug!("[{}] received ack: {:?}", client_addr, pkt);
                     if file.has_next() {
                         file_n = file.read(&mut file_buf)?;
-                        state = state.next(file_buf[..file_n].to_owned());
+                        state.next(file_buf[..file_n].to_owned());
                         match state.prepare_packet() {
                             Some(data) => {
                                 sock.send_to(&data.encode(), client_addr)?;
                                 debug!("[{}] sent data: {}", client_addr, data);
                             }
                             None => {
-                                // sent all data
-                                break;
+                                // shouldn't come here
+                                continue;
                             }
                         }
                     } else {
