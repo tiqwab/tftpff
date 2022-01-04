@@ -160,29 +160,18 @@ impl TftpServer {
 }
 
 enum RrqHandlingState {
-    // for file size is multiplication of 512
-    RequestAccepted1 {
+    RequestAccepted {
         trial_count: u16,
         data: Vec<u8>,
     },
-    DataAccepted1 {
+    DataAccepted {
         block: u16,
         trial_count: u16,
         data: Vec<u8>,
     },
-    EmptyDataAccepted1 {
+    EmptyDataAccepted {
         block: u16,
         trial_count: u16,
-    },
-    // for file size is not multiplication of 512
-    RequestAccepted2 {
-        trial_count: u16,
-        data: Vec<u8>,
-    },
-    DataAccepted2 {
-        block: u16,
-        trial_count: u16,
-        data: Vec<u8>,
     },
     Completed,
 }
@@ -191,18 +180,7 @@ impl RrqHandlingState {
     const MAX_TRIAL_COUNT: u16 = 5;
 
     fn new(data: Vec<u8>) -> RrqHandlingState {
-        // if file_size % 512 == 0 {
-        //     RrqHandlingState::RequestAccepted1 {
-        //         trial_count: 0,
-        //         data,
-        //     }
-        // } else {
-        //     RrqHandlingState::RequestAccepted2 {
-        //         trial_count: 0,
-        //         data,
-        //     }
-        // }
-        RrqHandlingState::RequestAccepted1 {
+        RrqHandlingState::RequestAccepted {
             trial_count: 0,
             data,
         }
@@ -211,11 +189,9 @@ impl RrqHandlingState {
     fn block(&self) -> u16 {
         // FIXME: panic
         match self {
-            RrqHandlingState::RequestAccepted1 { .. } => 1,
-            RrqHandlingState::DataAccepted1 { block, .. } => block.clone(),
-            RrqHandlingState::EmptyDataAccepted1 { block, .. } => block.clone(),
-            RrqHandlingState::RequestAccepted2 { .. } => 1,
-            RrqHandlingState::DataAccepted2 { block, .. } => block.clone(),
+            RrqHandlingState::RequestAccepted { .. } => 1,
+            RrqHandlingState::DataAccepted { block, .. } => block.clone(),
+            RrqHandlingState::EmptyDataAccepted { block, .. } => block.clone(),
             RrqHandlingState::Completed => panic!("shouldn't call block() for Completed"),
         }
     }
@@ -223,11 +199,9 @@ impl RrqHandlingState {
     fn data(&self) -> &[u8] {
         // FIXME: panic
         match self {
-            RrqHandlingState::RequestAccepted1 { data, .. } => data,
-            RrqHandlingState::DataAccepted1 { data, .. } => data,
-            RrqHandlingState::EmptyDataAccepted1 { .. } => Default::default(),
-            RrqHandlingState::RequestAccepted2 { data, .. } => data,
-            RrqHandlingState::DataAccepted2 { data, .. } => data,
+            RrqHandlingState::RequestAccepted { data, .. } => data,
+            RrqHandlingState::DataAccepted { data, .. } => data,
+            RrqHandlingState::EmptyDataAccepted { .. } => Default::default(),
             RrqHandlingState::Completed => panic!("shouldn't call data() for Completed"),
         }
     }
@@ -235,11 +209,9 @@ impl RrqHandlingState {
     fn trial_count(&self) -> u16 {
         // FIXME: panic
         (match self {
-            RrqHandlingState::RequestAccepted1 { trial_count, .. } => trial_count,
-            RrqHandlingState::DataAccepted1 { trial_count, .. } => trial_count,
-            RrqHandlingState::EmptyDataAccepted1 { trial_count, .. } => trial_count,
-            RrqHandlingState::RequestAccepted2 { trial_count, .. } => trial_count,
-            RrqHandlingState::DataAccepted2 { trial_count, .. } => trial_count,
+            RrqHandlingState::RequestAccepted { trial_count, .. } => trial_count,
+            RrqHandlingState::DataAccepted { trial_count, .. } => trial_count,
+            RrqHandlingState::EmptyDataAccepted { trial_count, .. } => trial_count,
             RrqHandlingState::Completed => panic!("shouldn't call trial_count() for Completed"),
         })
         .clone()
@@ -247,11 +219,9 @@ impl RrqHandlingState {
 
     fn increment_trial_count(&mut self) -> Option<u16> {
         let cur = match self {
-            RrqHandlingState::RequestAccepted1 { trial_count, .. } => trial_count,
-            RrqHandlingState::DataAccepted1 { trial_count, .. } => trial_count,
-            RrqHandlingState::EmptyDataAccepted1 { trial_count, .. } => trial_count,
-            RrqHandlingState::RequestAccepted2 { trial_count, .. } => trial_count,
-            RrqHandlingState::DataAccepted2 { trial_count, .. } => trial_count,
+            RrqHandlingState::RequestAccepted { trial_count, .. } => trial_count,
+            RrqHandlingState::DataAccepted { trial_count, .. } => trial_count,
+            RrqHandlingState::EmptyDataAccepted { trial_count, .. } => trial_count,
             RrqHandlingState::Completed => return None,
         };
         if *cur >= Self::MAX_TRIAL_COUNT {
@@ -272,44 +242,32 @@ impl RrqHandlingState {
         if data.len() > 0 {
             // FIXME: cannot be Completed here
             match self {
-                RrqHandlingState::RequestAccepted1 { .. } => RrqHandlingState::DataAccepted1 {
+                RrqHandlingState::RequestAccepted { .. } => RrqHandlingState::DataAccepted {
                     block: 2,
                     trial_count: 0,
                     data,
                 },
-                RrqHandlingState::DataAccepted1 { block, .. } => RrqHandlingState::DataAccepted1 {
+                RrqHandlingState::DataAccepted { block, .. } => RrqHandlingState::DataAccepted {
                     block: block + 1,
                     trial_count: 0,
                     data,
                 },
-                RrqHandlingState::RequestAccepted2 { .. } => RrqHandlingState::DataAccepted2 {
-                    block: 2,
-                    trial_count: 0,
-                    data,
-                },
-                RrqHandlingState::DataAccepted2 { block, .. } => RrqHandlingState::DataAccepted2 {
-                    block: block + 1,
-                    trial_count: 0,
-                    data,
-                },
-                RrqHandlingState::EmptyDataAccepted1 { .. } => self,
+                RrqHandlingState::EmptyDataAccepted { .. } => self,
                 RrqHandlingState::Completed => RrqHandlingState::Completed,
             }
         } else {
             match self {
-                RrqHandlingState::RequestAccepted1 { .. } => RrqHandlingState::EmptyDataAccepted1 {
+                RrqHandlingState::RequestAccepted { .. } => RrqHandlingState::EmptyDataAccepted {
                     block: 2,
                     trial_count: 0,
                 },
-                RrqHandlingState::DataAccepted1 { block, .. } => {
-                    RrqHandlingState::EmptyDataAccepted1 {
+                RrqHandlingState::DataAccepted { block, .. } => {
+                    RrqHandlingState::EmptyDataAccepted {
                         block: block + 1,
                         trial_count: 0,
                     }
                 }
-                RrqHandlingState::EmptyDataAccepted1 { .. } => RrqHandlingState::Completed,
-                RrqHandlingState::RequestAccepted2 { .. } => RrqHandlingState::Completed,
-                RrqHandlingState::DataAccepted2 { .. } => RrqHandlingState::Completed,
+                RrqHandlingState::EmptyDataAccepted { .. } => RrqHandlingState::Completed,
                 RrqHandlingState::Completed => RrqHandlingState::Completed,
             }
         }
@@ -676,6 +634,7 @@ mod tests {
 
     #[test]
     fn test_rrq_handler_with_512_multiple_bytes() {
+        env_logger::init();
         //
         // setup
         //
