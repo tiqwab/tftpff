@@ -10,10 +10,6 @@ pub struct TempDir {
 
 impl TempDir {
     pub fn new() -> Result<TempDir> {
-        let epoch_seconds = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs();
-        let rand_str = String::from_iter(('a'..='z').choose_multiple(&mut thread_rng(), 7));
         let dirname = format!("tftpff-{}", generate_random_name()?);
         let p = temp_dir().join(dirname);
 

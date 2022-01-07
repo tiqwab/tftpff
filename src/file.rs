@@ -3,8 +3,6 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::{fs, io};
 
-const BUF_SIZE: usize = 1024;
-
 /// This is a wrapper of std::fs::File.
 /// The main purpose is parse and encode file content based on netascii if requested.
 pub struct File {

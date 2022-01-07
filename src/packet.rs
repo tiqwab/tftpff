@@ -63,6 +63,7 @@ pub struct WritePacket {
 impl WritePacket {
     const OPCODE: u16 = 0x02;
 
+    #[allow(dead_code)]
     pub(crate) fn new(filename: String, mode: Mode) -> WritePacket {
         WritePacket { filename, mode }
     }
@@ -107,6 +108,7 @@ pub struct ReadPacket {
 impl ReadPacket {
     const OPCODE: u16 = 0x01;
 
+    #[allow(dead_code)]
     pub(crate) fn new(filename: String, mode: Mode) -> ReadPacket {
         ReadPacket { filename, mode }
     }

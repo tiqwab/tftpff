@@ -5,13 +5,12 @@ use anyhow::{bail, Context, Result};
 use log::{debug, error, warn};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use std::{fs, thread, time};
+use std::{fs, thread};
 
 pub struct TftpServer {
     server_addr: Ipv4Addr,
