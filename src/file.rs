@@ -108,30 +108,40 @@ impl Write for File {
             return self.inner.write(data);
         }
 
+        let mut in_buf = vec![];
+        let mut out_buf = vec![];
+
+        // This is for the case when '\r' appears at the last byte in the previous data
+        in_buf.append(&mut self.write_buf);
+        in_buf.extend(data);
+
         let mut i = 0;
-        while i < data.len() {
-            let x = data[i];
-            if x == b'\r' {
+        while i < in_buf.len() {
+            let cur_byte = in_buf[i];
+            if cur_byte == b'\r' {
                 i += 1;
-                let x = data[i];
-                if x == b'\0' {
-                    self.write_buf.push(b'\r');
-                } else if x == b'\n' {
-                    self.write_buf.push(b'\n');
+                if i < in_buf.len() {
+                    let following_byte = in_buf[i];
+                    if following_byte == b'\0' {
+                        out_buf.push(b'\r');
+                    } else if following_byte == b'\n' {
+                        out_buf.push(b'\n');
+                    } else {
+                        panic!(
+                            "Failed to parse data: unexpected byte after '\\r': 0x{:x}",
+                            following_byte
+                        );
+                    }
                 } else {
-                    panic!(
-                        "Failed to parse data: unexpected byte after '\r', 0x{:x}",
-                        x
-                    );
+                    self.write_buf.push(cur_byte);
                 }
             } else {
-                self.write_buf.push(x);
+                out_buf.push(cur_byte);
             }
             i += 1;
         }
 
-        let n = self.inner.write(&self.write_buf)?;
-        self.write_buf.clear();
+        let n = self.inner.write(&out_buf)?;
         Ok(n)
     }
 
@@ -237,5 +247,36 @@ mod tests {
     #[test]
     fn test_write_with_octet() {
         do_test_write(b"a\r\0a\r\na", b"a\r\0a\r\na", packet::Mode::OCTET);
+    }
+
+    #[test]
+    fn test_write_with_newlines() {
+        //
+        // setup
+        //
+        let temp_dir = temp::create_temp_dir().unwrap();
+        let file_path = temp_dir.path().join("test_write.txt");
+        let mut my_file = File::create(&file_path, packet::Mode::NETASCII).unwrap();
+
+        //
+        // exercise
+        //
+        let my_bufs = [
+            [[b'a'; 511].to_vec(), [b'\r'].to_vec()].concat(),
+            [[b'\0'].to_vec(), [b'a'; 510].to_vec(), [b'\r'].to_vec()].concat(),
+            [b'\n'].to_vec(),
+        ];
+        for buf in my_bufs.iter() {
+            my_file.write(buf).unwrap();
+        }
+
+        //
+        // verify
+        //
+        let mut fs_file = fs::File::open(file_path).unwrap();
+        let mut fs_buf = [0; 512];
+
+        assert_eq!(fs_file.read(&mut fs_buf).unwrap(), 512);
+        assert_eq!(fs_file.read(&mut fs_buf).unwrap(), 511);
     }
 }
