@@ -1,0 +1,14 @@
+[Unit]
+Description=TFTP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# User=root
+# Group=root
+EnvironmentFile=-/etc/conf.d/tftpff
+ExecStart=tftpff --dir $TFTPFF_DIR --addr $TFTPFF_ADDR --port $TFTPFF_PORT
+PIDFile=/var/run/tftpff/tftpff.pid
+
+[Install]
+WantedBy=multi-user.target
