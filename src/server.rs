@@ -442,9 +442,12 @@ pub fn create_wrq_handler(
         }
 
         let dest_path = base_dir.as_ref().join(&wrq.filename);
-        fs::rename(&temp_file_path, &dest_path)
+        // avoid using fs::rename (it cannot move if src and dest mount point are different)
+        fs::copy(&temp_file_path, &dest_path)
             .notify_error(&sock, &client_addr)
-            .with_context(|| format!("Failed to mv {:?} to {:?}", temp_file_path, dest_path))?;
+            .with_context(|| format!("Failed to copy {:?} to {:?}", temp_file_path, dest_path))?;
+        fs::remove_file(&temp_file_path)
+            .with_context(|| format!("Failed to delete {:?}", temp_file_path))?;
         debug!("[{}] finish WRQ for {:?}", client_addr, wrq.filename);
         return Ok(());
     }
