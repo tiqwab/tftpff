@@ -3,6 +3,7 @@ use clap::Parser;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::str::FromStr;
+use tftpff::privilege;
 use tftpff::server;
 use tftpff::temp;
 
@@ -27,7 +28,13 @@ fn main() -> Result<()> {
     let server_addr = Ipv4Addr::from_str(&args.addr)?;
     let server_port: u16 = args.port;
     let base_dir = PathBuf::from_str(&args.dir)?;
+
+    let user = "nobody";
+    let group = "nobody";
+
     let temp_dir = temp::create_temp_dir()?;
+    privilege::chmod(temp_dir.path(), 0o777)?;
+    privilege::chown(temp_dir.path(), user, group)?;
 
     let mut server = server::TftpServer::create(
         server_addr,
@@ -37,6 +44,7 @@ fn main() -> Result<()> {
     )
     .context("Failed to create TftpServer")?;
     server.bind().context("Failed to bind")?;
+    privilege::drop_privilege(user, group)?;
     server.run().context("Failed in TftpServer running")?;
 
     return Ok(());
