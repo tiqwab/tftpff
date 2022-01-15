@@ -18,6 +18,12 @@ struct Args {
 
     #[clap(short, long, default_value_t = 69)]
     port: u16,
+
+    #[clap(short, long, default_value = "root")]
+    user: String,
+
+    #[clap(short, long, default_value = "root")]
+    group: String,
 }
 
 fn main() -> Result<()> {
@@ -29,8 +35,8 @@ fn main() -> Result<()> {
     let server_port: u16 = args.port;
     let base_dir = PathBuf::from_str(&args.dir)?;
 
-    let user = "nobody";
-    let group = "nobody";
+    let user: &str = &args.user;
+    let group: &str = &args.group;
 
     let temp_dir = temp::create_temp_dir()?;
     privilege::chmod(temp_dir.path(), 0o777)?;

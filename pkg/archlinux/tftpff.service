@@ -7,7 +7,7 @@ Wants=network-online.target
 # User=root
 # Group=root
 EnvironmentFile=-/etc/conf.d/tftpff
-ExecStart=tftpff --dir $TFTPFF_DIR --addr $TFTPFF_ADDR --port $TFTPFF_PORT
+ExecStart=tftpff --dir $TFTPFF_DIR --addr $TFTPFF_ADDR --port $TFTPFF_PORT --user $TFTPFF_USER --group $TFTPFF_GROUP
 PIDFile=/var/run/tftpff/tftpff.pid
 
 [Install]
