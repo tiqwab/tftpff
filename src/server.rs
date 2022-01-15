@@ -1,10 +1,10 @@
 use crate::error::{TftpError, TftpErrorNotifier};
 use crate::packet::{ReadPacket, WritePacket};
-use crate::{file, packet, temp};
+use crate::{file, packet, socket, temp};
 use anyhow::{bail, Context, Result};
 use log::{debug, error, warn};
 use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -64,8 +64,8 @@ impl TftpServer {
 
     pub fn bind(&mut self) -> Result<()> {
         let server_sock_addr = SocketAddr::from((self.server_addr, self.server_port));
-        let server_sock =
-            UdpSocket::bind(server_sock_addr).context("Failed to bind server_sock")?;
+        let server_sock = socket::create_udp_socket(server_sock_addr)
+            .context("Failed to create server socket")?;
         server_sock.set_read_timeout(Some(Duration::from_secs(1)))?;
         debug!("listening at {}:{}", self.server_addr, self.server_port);
         self.server_sock = Some(server_sock);
@@ -74,6 +74,7 @@ impl TftpServer {
 
     pub fn run(&self) -> Result<()> {
         let server_sock = self.server_sock.as_ref().unwrap();
+        let server_addr = server_sock.local_addr()?;
 
         // for graceful shutdown
         let term = Arc::new(AtomicBool::new(false));
@@ -96,30 +97,30 @@ impl TftpServer {
             };
 
             match packet::InitialPacket::parse(&client_buf[..client_n]) {
-                Ok(packet::InitialPacket::WRQ(wrq)) => {
-                    match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
-                        Ok(child_sock) => {
-                            child_sock.set_read_timeout(Some(self.retry_interval))?;
-                            child_sock.set_write_timeout(Some(self.retry_interval))?;
-                            self.spawn_wrq(child_sock, client_addr, wrq);
-                        }
-                        Err(err) => {
-                            error!("Failed to create child_sock for {:?}. {:?}", wrq, err);
-                        }
+                Ok(packet::InitialPacket::WRQ(wrq)) => match socket::create_udp_socket(server_addr)
+                {
+                    Ok(child_sock) => {
+                        child_sock.set_read_timeout(Some(self.retry_interval))?;
+                        child_sock.set_write_timeout(Some(self.retry_interval))?;
+                        child_sock.connect(&client_addr)?;
+                        self.spawn_wrq(child_sock, client_addr, wrq);
                     }
-                }
-                Ok(packet::InitialPacket::RRQ(rrq)) => {
-                    match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
-                        Ok(child_sock) => {
-                            child_sock.set_read_timeout(Some(self.retry_interval))?;
-                            child_sock.set_write_timeout(Some(self.retry_interval))?;
-                            self.spawn_rrq(child_sock, client_addr, rrq);
-                        }
-                        Err(err) => {
-                            error!("Failed to create child_sock for {:?}. {:?}", rrq, err);
-                        }
+                    Err(err) => {
+                        error!("Failed to create child_sock for {:?}. {:?}", wrq, err);
                     }
-                }
+                },
+                Ok(packet::InitialPacket::RRQ(rrq)) => match socket::create_udp_socket(server_addr)
+                {
+                    Ok(child_sock) => {
+                        child_sock.set_read_timeout(Some(self.retry_interval))?;
+                        child_sock.set_write_timeout(Some(self.retry_interval))?;
+                        child_sock.connect(&client_addr)?;
+                        self.spawn_rrq(child_sock, client_addr, rrq);
+                    }
+                    Err(err) => {
+                        error!("Failed to create child_sock for {:?}. {:?}", rrq, err);
+                    }
+                },
                 Err(err) => {
                     warn!("Ignore unknown packet (expected WRQ or RRQ): {:?}", err);
                 }
