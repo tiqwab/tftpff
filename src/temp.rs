@@ -32,7 +32,6 @@ impl Drop for TempDir {
                 "Failed to remove temporary directory at {:?}: {:?}",
                 &self.path, err
             );
-            ()
         });
     }
 }

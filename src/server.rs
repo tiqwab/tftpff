@@ -1,4 +1,4 @@
-use crate::error::{TftpError, TftpErrorNotifier};
+use crate::error::TftpErrorNotifier;
 use crate::packet::{ReadPacket, WritePacket};
 use crate::{file, packet, socket, temp};
 use anyhow::{bail, Context, Result};
@@ -12,12 +12,15 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{fs, thread};
 
+type RRQHandler = dyn Fn(UdpSocket, SocketAddr, ReadPacket) -> Result<()> + Send + Sync;
+type WRQHandler = dyn Fn(UdpSocket, SocketAddr, WritePacket) -> Result<()> + Send + Sync;
+
 pub struct TftpServer {
     server_addr: Ipv4Addr,
     server_port: u16,
     retry_interval: Duration,
-    rrq_handler: Arc<Box<dyn Fn(UdpSocket, SocketAddr, ReadPacket) -> Result<()> + Send + Sync>>,
-    wrq_handler: Arc<Box<dyn Fn(UdpSocket, SocketAddr, WritePacket) -> Result<()> + Send + Sync>>,
+    rrq_handler: Arc<RRQHandler>,
+    wrq_handler: Arc<WRQHandler>,
     server_sock: Option<UdpSocket>,
 }
 
@@ -34,8 +37,8 @@ impl TftpServer {
             server_addr,
             server_port,
             retry_interval: Duration::from_secs(5),
-            rrq_handler: Arc::new(Box::new(rrq_handler)),
-            wrq_handler: Arc::new(Box::new(wrq_handler)),
+            rrq_handler: Arc::new(rrq_handler),
+            wrq_handler: Arc::new(wrq_handler),
             server_sock: None,
         })
     }
@@ -43,15 +46,15 @@ impl TftpServer {
     pub fn create_with_handlers(
         server_addr: Ipv4Addr,
         server_port: u16,
-        rrq_handler: Box<dyn Fn(UdpSocket, SocketAddr, ReadPacket) -> Result<()> + Send + Sync>,
-        wrq_handler: Box<dyn Fn(UdpSocket, SocketAddr, WritePacket) -> Result<()> + Send + Sync>,
+        rrq_handler: Box<RRQHandler>,
+        wrq_handler: Box<WRQHandler>,
     ) -> TftpServer {
         TftpServer {
             server_addr,
             server_port,
             retry_interval: Duration::from_secs(5),
-            rrq_handler: Arc::new(rrq_handler),
-            wrq_handler: Arc::new(wrq_handler),
+            rrq_handler: Arc::from(rrq_handler),
+            wrq_handler: Arc::from(wrq_handler),
             server_sock: None,
         }
     }
@@ -69,7 +72,7 @@ impl TftpServer {
         server_sock.set_read_timeout(Some(Duration::from_secs(1)))?;
         debug!("listening at {}:{}", self.server_addr, self.server_port);
         self.server_sock = Some(server_sock);
-        return Ok(());
+        Ok(())
     }
 
     pub fn run(&self) -> Result<()> {
@@ -177,7 +180,7 @@ impl RrqHandlingState {
     }
 
     fn block(&self) -> u16 {
-        self.block.clone()
+        self.block
     }
 
     fn data(&self) -> &[u8] {
@@ -185,7 +188,7 @@ impl RrqHandlingState {
     }
 
     fn trial_count(&self) -> u16 {
-        self.trial_count.clone()
+        self.trial_count
     }
 
     fn increment_trial_count(&mut self) -> Option<u16> {
@@ -219,7 +222,7 @@ pub fn create_rrq_handler(
         let mut file = file::File::open(&src_path, rrq.mode)
             .notify_error(&sock, &client_addr)
             .with_context(|| format!("Failed to open {:?}", src_path))?;
-        let mut file_buf = [0 as u8; 512];
+        let mut file_buf = [0_u8; 512];
         let mut file_n = file.read(&mut file_buf)?;
 
         let mut buf = [0; 1024];
@@ -299,7 +302,7 @@ pub fn create_rrq_handler(
         }
 
         debug!("[{}] finish RRQ for {:?}", client_addr, rrq.filename);
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -318,16 +321,15 @@ impl WrqHandlingState {
     fn block(&self) -> u16 {
         match self {
             WrqHandlingState::RequestAccepted { .. } => 0,
-            WrqHandlingState::DataAccepted { block, .. } => block.clone(),
+            WrqHandlingState::DataAccepted { block, .. } => *block,
         }
     }
 
     fn trial_count(&self) -> u16 {
-        (match self {
+        *(match self {
             WrqHandlingState::RequestAccepted { trial_count } => trial_count,
             WrqHandlingState::DataAccepted { trial_count, .. } => trial_count,
         })
-        .clone()
     }
 
     fn increment_trial_count(&mut self) -> Option<u16> {
@@ -339,7 +341,7 @@ impl WrqHandlingState {
             None
         } else {
             *cur += 1;
-            Some(cur.clone())
+            Some(*cur)
         }
     }
 
@@ -422,7 +424,7 @@ pub fn create_wrq_handler(
             match packet::Data::parse(&buf[..data_n]) {
                 Ok(pkt) => {
                     debug!("[{}] received data: size={}", client_addr, pkt.data().len());
-                    temp_file.write(pkt.data())?;
+                    temp_file.write_all(pkt.data())?;
 
                     state = state.next();
                     let ack = state.prepare_packet().unwrap();
@@ -450,23 +452,22 @@ pub fn create_wrq_handler(
         fs::remove_file(&temp_file_path)
             .with_context(|| format!("Failed to delete {:?}", temp_file_path))?;
         debug!("[{}] finish WRQ for {:?}", client_addr, wrq.filename);
-        return Ok(());
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TftpError;
     use crate::packet::Mode;
     use crate::temp;
-    use std::net::SocketAddrV4;
     use std::str::FromStr;
     use std::sync;
     use std::sync::Mutex;
 
     #[test]
     fn test_server_run() {
-        let temp_dir = temp::create_temp_dir().unwrap();
         let server_addr = Arc::new(Mutex::new(None));
         let rrq_queue = Arc::new(Mutex::new(vec![]));
         let wrq_queue = Arc::new(Mutex::new(vec![]));
@@ -476,11 +477,11 @@ mod tests {
             let rq = Arc::clone(&rrq_queue);
             let wq = Arc::clone(&wrq_queue);
 
-            let rrq_handler = move |sock, addr, pkt| {
+            let rrq_handler = move |_sock, _addr, pkt| {
                 rq.lock().unwrap().push(pkt);
                 Ok(())
             };
-            let wrq_handler = move |sock, addr, pkt| {
+            let wrq_handler = move |_sock, _addr, pkt| {
                 wq.lock().unwrap().push(pkt);
                 Ok(())
             };
@@ -492,7 +493,7 @@ mod tests {
                 Box::new(wrq_handler),
             );
 
-            let h = thread::spawn(move || {
+            let _h = thread::spawn(move || {
                 server.bind().unwrap();
                 *sa.lock().unwrap() = Some(server.server_addr().unwrap());
                 server.run().unwrap()
@@ -542,7 +543,7 @@ mod tests {
         let rrq = packet::ReadPacket::new(test_file_name.to_string(), packet::Mode::OCTET);
 
         let _h = thread::spawn(move || {
-            handler(sock_handler, addr_client, rrq);
+            handler(sock_handler, addr_client, rrq).unwrap();
         });
 
         //
@@ -550,7 +551,6 @@ mod tests {
         //
         let mut buf_client = [0; 1024];
         let mut actual_content: Vec<u8> = vec![];
-        let mode = Mode::OCTET;
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
         let data = packet::Data::parse(&buf_client[..n_client]).unwrap();
@@ -601,7 +601,7 @@ mod tests {
         let rrq = packet::ReadPacket::new(test_file_name.to_string(), packet::Mode::OCTET);
 
         let _h = thread::spawn(move || {
-            handler(sock_handler, addr_client, rrq);
+            handler(sock_handler, addr_client, rrq).unwrap();
         });
 
         //
@@ -609,7 +609,6 @@ mod tests {
         //
         let mut buf_client = [0; 1024];
         let mut actual_content: Vec<u8> = vec![];
-        let mode = Mode::OCTET;
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
         let data = packet::Data::parse(&buf_client[..n_client]).unwrap();
@@ -659,7 +658,6 @@ mod tests {
             .unwrap();
 
         let sock_handler = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
-        let addr_handler = sock_handler.local_addr().unwrap();
         sock_handler
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
@@ -670,15 +668,13 @@ mod tests {
         let rrq = packet::ReadPacket::new(test_file_name.to_string(), packet::Mode::OCTET);
 
         let _h = thread::spawn(move || {
-            handler(sock_handler, addr_client, rrq);
+            handler(sock_handler, addr_client, rrq).unwrap();
         });
 
         //
         // exercise and verify
         //
         let mut buf_client = [0; 1024];
-        let mut actual_content: Vec<u8> = vec![];
-        let mode = Mode::OCTET;
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
         let err_pkt = packet::Error::parse(&buf_client[..n_client]).unwrap();
@@ -711,7 +707,7 @@ mod tests {
         let barrier_client = Arc::new(sync::Barrier::new(2));
         let barrier_handler = Arc::clone(&barrier_client);
         let _h = thread::spawn(move || {
-            handler(sock_handler, addr_client, wrq);
+            handler(sock_handler, addr_client, wrq).unwrap();
             barrier_handler.wait();
         });
 
@@ -720,7 +716,6 @@ mod tests {
         //
         let mut buf_client = [0; 1024];
         let content = [b'a'; 513];
-        let mode = Mode::OCTET;
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
         let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();
@@ -779,7 +774,7 @@ mod tests {
         let barrier_client = Arc::new(sync::Barrier::new(2));
         let barrier_handler = Arc::clone(&barrier_client);
         let _h = thread::spawn(move || {
-            handler(sock_handler, addr_client, wrq);
+            handler(sock_handler, addr_client, wrq).unwrap_or_else(|e| println!("{:?}", e));
             barrier_handler.wait();
         });
 
@@ -788,7 +783,6 @@ mod tests {
         //
         let mut buf_client = [0; 1024];
         let content = [b'a'; 513];
-        let mode = Mode::OCTET;
 
         let (n_client, _) = sock_client.recv_from(&mut buf_client).unwrap();
         let ack = packet::ACK::parse(&buf_client[..n_client]).unwrap();

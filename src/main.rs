@@ -53,5 +53,5 @@ fn main() -> Result<()> {
     privilege::drop_privilege(user, group)?;
     server.run().context("Failed in TftpServer running")?;
 
-    return Ok(());
+    Ok(())
 }

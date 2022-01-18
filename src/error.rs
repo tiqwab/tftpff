@@ -35,14 +35,14 @@ impl TftpError {
 
     pub fn error_code(&self) -> u16 {
         match self {
-            TftpError::Others => (0x0 as u16),
-            TftpError::FileNotFound => (0x1 as u16),
-            TftpError::AccessViolation => (0x2 as u16),
-            TftpError::DiskNoSpace => (0x3 as u16),
-            TftpError::IllegalTftpOp => (0x4 as u16),
-            TftpError::UnknownTid => (0x5 as u16),
-            TftpError::FileExists => (0x6 as u16),
-            TftpError::NoSuchUser => (0x7 as u16),
+            TftpError::Others => (0x0_u16),
+            TftpError::FileNotFound => (0x1_u16),
+            TftpError::AccessViolation => (0x2_u16),
+            TftpError::DiskNoSpace => (0x3_u16),
+            TftpError::IllegalTftpOp => (0x4_u16),
+            TftpError::UnknownTid => (0x5_u16),
+            TftpError::FileExists => (0x6_u16),
+            TftpError::NoSuchUser => (0x7_u16),
         }
     }
 }

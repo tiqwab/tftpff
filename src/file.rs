@@ -50,6 +50,7 @@ impl File {
         let initial_len = self.read_buf.len();
 
         for x in buf[..n_buf].iter() {
+            #[allow(clippy::collapsible_else_if)]
             if self.mode == packet::Mode::OCTET {
                 self.read_buf.push(*x);
             } else {
@@ -139,13 +140,15 @@ impl Write for File {
             i += 1;
         }
 
-        let n = self.inner.write(&out_buf)?;
-        Ok(n)
+        // FIXME: there is difference between the length of data and bytes written
+        // returns data.len() here otherwise write_all of this file doesn't finish
+        self.inner.write_all(&out_buf)?;
+        Ok(data.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
         if !self.write_buf.is_empty() {
-            self.inner.write(&self.write_buf)?;
+            self.inner.write_all(&self.write_buf)?;
         }
         self.inner.flush()
     }
@@ -163,7 +166,7 @@ mod tests {
         let temp_dir = temp::create_temp_dir().unwrap();
         let file_path = temp_dir.path().join("test_read.txt");
         let mut fs_file = fs::File::create(&file_path).unwrap();
-        fs_file.write_all(&content);
+        fs_file.write_all(content).unwrap();
 
         //
         // exercise
@@ -198,7 +201,7 @@ mod tests {
         let temp_dir = temp::create_temp_dir().unwrap();
         let file_path = temp_dir.path().join("test_read.txt");
         let mut fs_file = fs::File::create(&file_path).unwrap();
-        fs_file.write_all(&data);
+        fs_file.write_all(&data).unwrap();
 
         //
         // exercise and verify
@@ -226,14 +229,14 @@ mod tests {
         // exercise
         //
         let my_buf = content;
-        my_file.write(my_buf).unwrap();
+        my_file.write_all(my_buf).unwrap();
 
         //
         // verify
         //
         let mut fs_file = fs::File::open(file_path).unwrap();
         let mut fs_buf = vec![];
-        fs_file.read_to_end(&mut fs_buf);
+        fs_file.read_to_end(&mut fs_buf).unwrap();
         assert_eq!(&fs_buf, expected);
     }
 
@@ -265,7 +268,7 @@ mod tests {
             [b'\n'].to_vec(),
         ];
         for buf in my_bufs.iter() {
-            my_file.write(buf).unwrap();
+            my_file.write_all(buf).unwrap();
         }
 
         //

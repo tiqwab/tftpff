@@ -1,5 +1,5 @@
 use crate::error::TftpError;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use std::fmt;
 use std::fmt::Formatter;
 use std::path::Path;
@@ -86,7 +86,7 @@ impl WritePacket {
         let filename = Path::new(&raw_filename)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .ok_or(anyhow!("Illegal format of filename: {}", raw_filename))?;
+            .ok_or_else(|| anyhow!("Illegal format of filename: {}", raw_filename))?;
         let mode = Mode::parse(bs[1]).ok_or(anyhow!("Failed to parse mode"))?;
         Ok(WritePacket { filename, mode })
     }
@@ -131,7 +131,7 @@ impl ReadPacket {
         let filename = Path::new(&raw_filename)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .ok_or(anyhow!("Illegal format of filename: {}", raw_filename))?;
+            .ok_or_else(|| anyhow!("Illegal format of filename: {}", raw_filename))?;
         let mode = Mode::parse(bs[1]).ok_or(anyhow!("Failed to parse mode"))?;
         Ok(ReadPacket { filename, mode })
     }
@@ -389,7 +389,6 @@ mod tests {
     #[test]
     fn test_encode_data() {
         let data = Data::new(1, &b"hello"[..]);
-        let mode = Mode::OCTET;
         assert_eq!(
             data.encode(),
             vec![0x00, 0x03, 0x00, 0x01, 0x68, 0x65, 0x6c, 0x6c, 0x6f]
